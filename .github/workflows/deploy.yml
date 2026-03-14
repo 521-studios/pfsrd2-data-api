@@ -1,0 +1,154 @@
+name: Deploy pfsrd2-data-api
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+  id-token: write  # OIDC
+
+env:
+  AWS_REGION: us-east-2
+  GO_VERSION: "1.22"
+  TF_VERSION: "1.9.0"
+
+jobs:
+  # ── Staging: auto on PR, or manual dispatch ──────────────────────────────────
+
+  deploy-staging:
+    name: Deploy — staging
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment: staging
+
+    env:
+      TF_STATE_BUCKET: 521studios-infra-tfstate-242288027927
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: pfsrd2-data-api-deploy-staging
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Lambda binary
+        working-directory: service
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o bootstrap .
+          zip ../function.zip bootstrap
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="key=pfsrd2-data-api/staging/terraform.tfstate"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="env=staging" \
+            -var="infra_state_bucket=${{ env.TF_STATE_BUCKET }}"
+
+      - name: Update Lambda code
+        working-directory: terraform
+        run: |
+          FUNCTION=$(terraform output -raw lambda_function_name)
+          aws lambda update-function-code \
+            --function-name "$FUNCTION" \
+            --zip-file fileb://../function.zip \
+            --architectures arm64
+          aws lambda wait function-updated --function-name "$FUNCTION"
+
+  # ── Production: auto on merge to main, or manual dispatch ────────────────────
+
+  deploy-production:
+    name: Deploy — production
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    environment: production
+
+    env:
+      TF_STATE_BUCKET: 521studios-infra-tfstate-242258465702
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require main branch for production
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "❌ Production deploys must be triggered from the main branch (got: ${{ github.ref }})"
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: pfsrd2-data-api-deploy-production
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Lambda binary
+        working-directory: service
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o bootstrap .
+          zip ../function.zip bootstrap
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+            -backend-config="key=pfsrd2-data-api/production/terraform.tfstate"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="env=production" \
+            -var="infra_state_bucket=${{ env.TF_STATE_BUCKET }}"
+
+      - name: Update Lambda code
+        working-directory: terraform
+        run: |
+          FUNCTION=$(terraform output -raw lambda_function_name)
+          aws lambda update-function-code \
+            --function-name "$FUNCTION" \
+            --zip-file fileb://../function.zip \
+            --architectures arm64
+          aws lambda wait function-updated --function-name "$FUNCTION"

@@ -1,0 +1,19 @@
+services:
+  pfsrd2-api:
+    build:
+      context: ./service
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./service:/app        # source mount for Air hot-reload
+      - pfsrd2-db:/tmp        # persistent DB volume (survives restarts)
+      - ${HOME}/.aws:/root/.aws:ro
+    environment:
+      - BUCKET_NAME=521studios-staging-pfsrd2-data
+      - AWS_PROFILE=521-Staging-Admin
+      - WATCHER_INTERVAL=1h
+      # Mount ~/.aws into the container so AWS_PROFILE is resolved
+    ports:
+      - "8090:8090"
+
+volumes:
+  pfsrd2-db:
