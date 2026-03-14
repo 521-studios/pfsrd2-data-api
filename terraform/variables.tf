@@ -9,15 +9,10 @@ variable "aws_region" {
   default     = "us-east-2"
 }
 
-variable "infra_state_bucket" {
-  description = "S3 bucket holding the shared infra Terraform state"
+variable "app_domain" {
+  description = "App domain used for image redirects (e.g. lets-roll.org)"
   type        = string
-}
-
-variable "image_domain" {
-  description = "CloudFront domain for image serving"
-  type        = string
-  default     = "images.pfsrd2.521studios.com"
+  default     = "lets-roll.org"
 }
 
 variable "lambda_zip_path" {

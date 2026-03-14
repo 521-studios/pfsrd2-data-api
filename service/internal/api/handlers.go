@@ -17,7 +17,7 @@ import (
 // Config holds handler dependencies injected at startup.
 type Config struct {
 	S3Client    *s3.Client
-	ImageDomain string // e.g. "images.pfsrd2.521studios.com"
+	ImageDomain string // app domain for image redirects, e.g. "lets-roll.org"
 	StartupCfg  startup.Config
 }
 
@@ -218,8 +218,7 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 func (h *handler) imageRedirect(w http.ResponseWriter, r *http.Request) {
 	category := chi.URLParam(r, "category")
 	filename := chi.URLParam(r, "filename")
-	s3Key := "images/" + category + "/" + filename
-	url := s3.CloudFrontURL(h.cfg.ImageDomain, s3Key)
+	url := "https://" + h.cfg.ImageDomain + "/pfsrd2/images/" + category + "/" + filename
 	http.Redirect(w, r, url, http.StatusFound)
 }
 

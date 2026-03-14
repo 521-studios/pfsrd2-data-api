@@ -69,15 +69,3 @@ func (c *Client) HeadObject(ctx context.Context, key string) (etag string, err e
 
 // DBKey is the S3 key for the SQLite database.
 const DBKey = "db/pfsrd2.db"
-
-// CloudFrontURL builds a CloudFront URL for an image key.
-// imageDomain should be the CloudFront domain (e.g. "images.pfsrd2.521studios.com").
-func CloudFrontURL(imageDomain, imageS3Key string) string {
-	// imageS3Key is "images/Monsters/Foo.webp" — strip leading "images/"
-	// and serve under the CloudFront domain.
-	path := imageS3Key
-	if len(path) > 7 && path[:7] == "images/" {
-		path = path[7:]
-	}
-	return "https://" + imageDomain + "/" + path
-}
