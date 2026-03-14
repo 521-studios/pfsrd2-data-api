@@ -16,6 +16,8 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Required to destroy the images ACM certificate (orphaned from old architecture).
+# Remove this provider block once the cert is gone from state.
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
@@ -29,15 +31,6 @@ locals {
     Environment = var.env
     ManagedBy   = "terraform"
   }
-}
-
-# ---------------------------------------------------------------------------
-# Route53 zone — looked up by name, not via infra remote state
-# ---------------------------------------------------------------------------
-
-data "aws_route53_zone" "primary" {
-  name         = var.route53_zone_name
-  private_zone = false
 }
 
 # ---------------------------------------------------------------------------
@@ -173,7 +166,7 @@ resource "aws_lambda_function" "api" {
     variables = {
       BUCKET_NAME      = aws_s3_bucket.data.id
       ENV              = var.env
-      IMAGE_DOMAIN     = var.image_domain
+      IMAGE_DOMAIN     = var.app_domain
       WATCHER_INTERVAL = var.watcher_interval
     }
   }
@@ -204,129 +197,4 @@ resource "aws_lambda_permission" "public_url" {
   function_name          = aws_lambda_function.api.function_name
   principal              = "*"
   function_url_auth_type = "NONE"
-}
-
-# ---------------------------------------------------------------------------
-# CloudFront for images
-# ---------------------------------------------------------------------------
-
-resource "aws_cloudfront_origin_access_control" "images" {
-  name                              = "${local.name}-${var.env}-images"
-  description                       = "OAC for pfsrd2 images"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
-
-resource "aws_cloudfront_distribution" "images" {
-  enabled = true
-  comment = "pfsrd2 images - ${var.env}"
-  aliases = [var.image_domain]
-  tags    = local.tags
-
-  origin {
-    domain_name              = aws_s3_bucket.data.bucket_regional_domain_name
-    origin_id                = "s3-images"
-    origin_path              = "/images"
-    origin_access_control_id = aws_cloudfront_origin_access_control.images.id
-  }
-
-  default_cache_behavior {
-    target_origin_id       = "s3-images"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-
-    forwarded_values {
-      query_string = false
-      cookies { forward = "none" }
-    }
-
-    min_ttl     = 0
-    default_ttl = 86400   # 1 day
-    max_ttl     = 604800  # 7 days
-  }
-
-  restrictions {
-    geo_restriction { restriction_type = "none" }
-  }
-
-  viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.images.certificate_arn
-    ssl_support_method       = "sni-only"
-    minimum_protocol_version = "TLSv1.2_2021"
-  }
-}
-
-# Allow CloudFront OAC to read from the images/ prefix in S3
-data "aws_iam_policy_document" "s3_cloudfront" {
-  statement {
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.data.arn}/images/*"]
-    principals {
-      type        = "Service"
-      identifiers = ["cloudfront.amazonaws.com"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "AWS:SourceArn"
-      values   = [aws_cloudfront_distribution.images.arn]
-    }
-  }
-}
-
-resource "aws_s3_bucket_policy" "data" {
-  bucket = aws_s3_bucket.data.id
-  policy = data.aws_iam_policy_document.s3_cloudfront.json
-}
-
-# ---------------------------------------------------------------------------
-# TLS certificate for CloudFront (must be in us-east-1)
-# ---------------------------------------------------------------------------
-
-resource "aws_acm_certificate" "images" {
-  provider          = aws.us_east_1
-  domain_name       = var.image_domain
-  validation_method = "DNS"
-  tags              = local.tags
-
-  lifecycle { create_before_destroy = true }
-}
-
-resource "aws_route53_record" "images_cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.images.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  }
-  zone_id = data.aws_route53_zone.primary.zone_id
-  name    = each.value.name
-  type    = each.value.type
-  ttl     = 60
-  records = [each.value.record]
-}
-
-resource "aws_acm_certificate_validation" "images" {
-  provider                = aws.us_east_1
-  certificate_arn         = aws_acm_certificate.images.arn
-  validation_record_fqdns = [for r in aws_route53_record.images_cert_validation : r.fqdn]
-}
-
-# ---------------------------------------------------------------------------
-# Route53 records
-# ---------------------------------------------------------------------------
-
-resource "aws_route53_record" "images_cf" {
-  zone_id = data.aws_route53_zone.primary.zone_id
-  name    = var.image_domain
-  type    = "A"
-
-  alias {
-    name                   = aws_cloudfront_distribution.images.domain_name
-    zone_id                = aws_cloudfront_distribution.images.hosted_zone_id
-    evaluate_target_health = false
-  }
 }
