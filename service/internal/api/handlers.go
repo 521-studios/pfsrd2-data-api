@@ -2,7 +2,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -280,5 +279,3 @@ func isNotFound(err error) bool {
 
 // contextKey is used for request-scoped values (future use: auth, trace IDs).
 type contextKey string
-
-const _ context.Context = nil // ensure context is imported
