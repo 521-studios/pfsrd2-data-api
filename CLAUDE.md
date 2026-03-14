@@ -66,4 +66,14 @@ s3://521studios-{env}-pfsrd2-data/
 
 ## Deploy
 
-Push to `main` → GitHub Actions runs `deploy.yml` → Terraform + Lambda update.
+### Staging
+Deploys automatically on push to `main`. Trigger manually:
+```bash
+gh workflow run deploy.yml --ref main --field environment=staging
+```
+
+### Production
+Manual only, must be triggered from `main`:
+```bash
+gh workflow run deploy.yml --ref main --field environment=production
+```
