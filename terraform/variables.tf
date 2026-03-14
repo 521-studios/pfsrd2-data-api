@@ -20,12 +20,6 @@ variable "image_domain" {
   default     = "images.pfsrd2.521studios.com"
 }
 
-variable "api_domain" {
-  description = "API Gateway custom domain"
-  type        = string
-  default     = "api.pfsrd2.521studios.com"
-}
-
 variable "lambda_zip_path" {
   description = "Path to the compiled Lambda zip"
   type        = string

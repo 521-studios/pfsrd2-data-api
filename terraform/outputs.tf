@@ -1,6 +1,6 @@
-output "api_endpoint" {
-  description = "API Gateway endpoint URL"
-  value       = aws_apigatewayv2_api.api.api_endpoint
+output "lambda_function_url" {
+  description = "Lambda Function URL (used as CloudFront origin)"
+  value       = aws_lambda_function_url.api.function_url
 }
 
 output "lambda_function_name" {

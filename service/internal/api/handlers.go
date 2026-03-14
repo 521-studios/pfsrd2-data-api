@@ -29,19 +29,21 @@ func NewRouter(cfg Config) *chi.Mux {
 	r := chi.NewRouter()
 	h := &handler{cfg: cfg}
 
-	r.Get("/search", h.search)
-	r.Get("/types", h.types)
-	r.Get("/sources", h.sources)
-	r.Get("/entries/{gameID}", h.getEntry)
-	r.Get("/entries/{gameID}/full", h.getEntryFull)
-	r.Get("/images/{category}/{filename}", h.imageRedirect)
-	r.Get("/db/status", h.dbStatus)
-	r.Post("/db/refresh", h.dbRefresh)
+	r.Route("/api/pfsrd2", func(r chi.Router) {
+		r.Get("/search", h.search)
+		r.Get("/types", h.types)
+		r.Get("/sources", h.sources)
+		r.Get("/entries/{gameID}", h.getEntry)
+		r.Get("/entries/{gameID}/full", h.getEntryFull)
+		r.Get("/images/{category}/{filename}", h.imageRedirect)
+		r.Get("/db/status", h.dbStatus)
+		r.Post("/db/refresh", h.dbRefresh)
 
-	// /{type} — paginated list
-	// /{type}/{schema_version}/{book}/{filename} — full JSON from S3
-	r.Get("/{type}", h.listType)
-	r.Get("/{type}/{schemaVersion}/{book}/{filename}", h.getFullJSON)
+		// /{type} — paginated list
+		// /{type}/{schema_version}/{book}/{filename} — full JSON from S3
+		r.Get("/{type}", h.listType)
+		r.Get("/{type}/{schemaVersion}/{book}/{filename}", h.getFullJSON)
+	})
 
 	return r
 }
