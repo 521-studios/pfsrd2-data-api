@@ -6,3 +6,5 @@ service/tmp/
 *.db-wal
 .env
 .env.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl

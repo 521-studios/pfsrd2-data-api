@@ -9,9 +9,10 @@ variable "aws_region" {
   default     = "us-east-2"
 }
 
-variable "infra_state_bucket" {
-  description = "S3 bucket holding the shared infra Terraform state"
+variable "route53_zone_name" {
+  description = "Route53 hosted zone name for DNS records (must include trailing dot)"
   type        = string
+  default     = "521studios.com."
 }
 
 variable "image_domain" {

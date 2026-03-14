@@ -21,22 +21,9 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# ---------------------------------------------------------------------------
-# Remote state — pull outputs from shared infra
-# ---------------------------------------------------------------------------
-
-data "terraform_remote_state" "infra" {
-  backend = "s3"
-  config = {
-    bucket = var.infra_state_bucket
-    key    = "infra/${var.env}/terraform.tfstate"
-    region = "us-east-2"
-  }
-}
-
 locals {
-  infra  = data.terraform_remote_state.infra.outputs
-  name   = "pfsrd2-data-api"
+  name        = "pfsrd2-data-api"
+  bucket_name = "521studios-${var.env}-pfsrd2-data"
   tags = {
     Project     = "pfsrd2-data-api"
     Environment = var.env
@@ -45,11 +32,96 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# S3 — bucket created by infra, referenced here for bucket policy + CF origin
+# Route53 zone — looked up by name, not via infra remote state
 # ---------------------------------------------------------------------------
 
-data "aws_s3_bucket" "data" {
-  bucket = local.infra.pfsrd2_data_bucket_name
+data "aws_route53_zone" "primary" {
+  name         = var.route53_zone_name
+  private_zone = false
+}
+
+# ---------------------------------------------------------------------------
+# S3 — owned by this service
+# ---------------------------------------------------------------------------
+
+resource "aws_s3_bucket" "data" {
+  bucket = local.bucket_name
+  tags   = local.tags
+}
+
+resource "aws_s3_bucket_versioning" "data" {
+  bucket = aws_s3_bucket.data.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "data" {
+  bucket                  = aws_s3_bucket.data.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# IAM policies — owned by this service
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_policy" "lambda_s3" {
+  name        = "521studios-${var.env}-pfsrd2-lambda-s3"
+  description = "pfsrd2-data-api Lambda: read db/ and json/ from pfsrd2-data bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaReadAccess"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:HeadObject"]
+        Resource = [
+          "${aws_s3_bucket.data.arn}/db/*",
+          "${aws_s3_bucket.data.arn}/json/*",
+        ]
+      },
+    ]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_policy" "indexer_s3" {
+  name        = "521studios-${var.env}-pfsrd2-indexer-s3"
+  description = "pf2_build_index: read/write to pfsrd2-data bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "IndexerObjectAccess"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:HeadObject"]
+        Resource = "${aws_s3_bucket.data.arn}/*"
+      },
+      {
+        Sid    = "IndexerBucketAccess"
+        Effect = "Allow"
+        Action = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = aws_s3_bucket.data.arn
+      },
+    ]
+  })
+
+  tags = local.tags
 }
 
 # ---------------------------------------------------------------------------
@@ -77,10 +149,9 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# S3 read policy is managed in infra — attach it here
 resource "aws_iam_role_policy_attachment" "lambda_s3" {
   role       = aws_iam_role.lambda.name
-  policy_arn = local.infra.pfsrd2_data_lambda_iam_policy_arn
+  policy_arn = aws_iam_policy.lambda_s3.arn
 }
 
 # ---------------------------------------------------------------------------
@@ -100,7 +171,7 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      BUCKET_NAME      = local.infra.pfsrd2_data_bucket_name
+      BUCKET_NAME      = aws_s3_bucket.data.id
       ENV              = var.env
       IMAGE_DOMAIN     = var.image_domain
       WATCHER_INTERVAL = var.watcher_interval
@@ -154,7 +225,7 @@ resource "aws_cloudfront_distribution" "images" {
   tags    = local.tags
 
   origin {
-    domain_name              = data.aws_s3_bucket.data.bucket_regional_domain_name
+    domain_name              = aws_s3_bucket.data.bucket_regional_domain_name
     origin_id                = "s3-images"
     origin_path              = "/images"
     origin_access_control_id = aws_cloudfront_origin_access_control.images.id
@@ -188,11 +259,11 @@ resource "aws_cloudfront_distribution" "images" {
   }
 }
 
-# Allow CloudFront to read from the images/ prefix in S3
+# Allow CloudFront OAC to read from the images/ prefix in S3
 data "aws_iam_policy_document" "s3_cloudfront" {
   statement {
     actions   = ["s3:GetObject"]
-    resources = ["${data.aws_s3_bucket.data.arn}/images/*"]
+    resources = ["${aws_s3_bucket.data.arn}/images/*"]
     principals {
       type        = "Service"
       identifiers = ["cloudfront.amazonaws.com"]
@@ -206,7 +277,7 @@ data "aws_iam_policy_document" "s3_cloudfront" {
 }
 
 resource "aws_s3_bucket_policy" "data" {
-  bucket = data.aws_s3_bucket.data.id
+  bucket = aws_s3_bucket.data.id
   policy = data.aws_iam_policy_document.s3_cloudfront.json
 }
 
@@ -231,7 +302,7 @@ resource "aws_route53_record" "images_cert_validation" {
       type   = dvo.resource_record_type
     }
   }
-  zone_id = local.infra.route53_zone_id
+  zone_id = data.aws_route53_zone.primary.zone_id
   name    = each.value.name
   type    = each.value.type
   ttl     = 60
@@ -249,7 +320,7 @@ resource "aws_acm_certificate_validation" "images" {
 # ---------------------------------------------------------------------------
 
 resource "aws_route53_record" "images_cf" {
-  zone_id = local.infra.route53_zone_id
+  zone_id = data.aws_route53_zone.primary.zone_id
   name    = var.image_domain
   type    = "A"
 
@@ -259,4 +330,3 @@ resource "aws_route53_record" "images_cf" {
     evaluate_target_health = false
   }
 }
-

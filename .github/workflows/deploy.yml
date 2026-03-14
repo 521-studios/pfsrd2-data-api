@@ -73,7 +73,8 @@ jobs:
         run: |
           terraform apply -auto-approve -input=false \
             -var="env=staging" \
-            -var="infra_state_bucket=${{ env.TF_STATE_BUCKET }}"
+            -var="route53_zone_name=staging.521studios.com." \
+            -var="image_domain=images.pfsrd2.staging.521studios.com"
 
       - name: Update Lambda code
         working-directory: terraform
@@ -140,8 +141,7 @@ jobs:
         working-directory: terraform
         run: |
           terraform apply -auto-approve -input=false \
-            -var="env=production" \
-            -var="infra_state_bucket=${{ env.TF_STATE_BUCKET }}"
+            -var="env=production"
 
       - name: Update Lambda code
         working-directory: terraform
