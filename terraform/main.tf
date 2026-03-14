@@ -125,6 +125,16 @@ resource "aws_lambda_function_url" "api" {
   authorization_type = "NONE"
 }
 
+# Terraform doesn't auto-create the resource policy for NONE auth (unlike the Console).
+# This explicitly grants public invoke access to the Function URL.
+resource "aws_lambda_permission" "public_url" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.api.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
 # ---------------------------------------------------------------------------
 # CloudFront for images
 # ---------------------------------------------------------------------------
