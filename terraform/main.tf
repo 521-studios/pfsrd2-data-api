@@ -189,12 +189,20 @@ resource "aws_lambda_function_url" "api" {
   authorization_type = "AWS_IAM"
 }
 
-# Grants CloudFront permission to invoke this Function URL via OAC (SigV4).
-# The Lambda is not publicly accessible — only reachable through CloudFront
-# or by IAM principals with lambda:InvokeFunctionUrl permission.
-resource "aws_lambda_permission" "cloudfront" {
-  statement_id  = "AllowCloudFrontInvoke"
+# Grants CloudFront OAC permission to invoke this Function URL.
+# Both actions are required: InvokeFunctionUrl (Function URL auth layer) and
+# InvokeFunction (underlying Lambda invocation).  OAC signs requests with SigV4;
+# the Lambda is not publicly accessible — only reachable through CloudFront.
+resource "aws_lambda_permission" "cloudfront_url" {
+  statement_id  = "AllowCloudFrontInvokeFunctionUrl"
   action        = "lambda:InvokeFunctionUrl"
+  function_name = aws_lambda_function.api.function_name
+  principal     = "cloudfront.amazonaws.com"
+}
+
+resource "aws_lambda_permission" "cloudfront_invoke" {
+  statement_id  = "AllowCloudFrontInvokeFunction"
+  action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api.function_name
   principal     = "cloudfront.amazonaws.com"
 }
