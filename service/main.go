@@ -56,7 +56,7 @@ func main() {
 	})
 
 	adapter := chiproxy.NewV2(router)
-	lambda.Start(adapter.ProxyWithContext)
+	lambda.Start(adapter.ProxyWithContextV2)
 }
 
 func mustEnv(key string) string {

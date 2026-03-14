@@ -25,7 +25,7 @@ type Config struct {
 // Router
 // ---------------------------------------------------------------------------
 
-func NewRouter(cfg Config) http.Handler {
+func NewRouter(cfg Config) *chi.Mux {
 	r := chi.NewRouter()
 	h := &handler{cfg: cfg}
 
