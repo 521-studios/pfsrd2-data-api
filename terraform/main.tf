@@ -181,19 +181,20 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 # ---------------------------------------------------------------------------
-# Lambda Function URL — CloudFront uses this as the API origin
+# Lambda Function URL — CloudFront uses this as the API origin via OAC
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_function_url" "api" {
   function_name      = aws_lambda_function.api.function_name
-  authorization_type = "NONE"
+  authorization_type = "AWS_IAM"
 }
 
-# Terraform doesn't auto-create the resource policy for NONE auth (unlike the Console).
-# This explicitly grants public invoke access to the Function URL.
-resource "aws_lambda_permission" "public_url" {
-  statement_id  = "FunctionURLAllowPublicAccess"
+# Grants CloudFront permission to invoke this Function URL via OAC (SigV4).
+# The Lambda is not publicly accessible — only reachable through CloudFront
+# or by IAM principals with lambda:InvokeFunctionUrl permission.
+resource "aws_lambda_permission" "cloudfront" {
+  statement_id  = "AllowCloudFrontInvoke"
   action        = "lambda:InvokeFunctionUrl"
   function_name = aws_lambda_function.api.function_name
-  principal     = "*"
+  principal     = "cloudfront.amazonaws.com"
 }
