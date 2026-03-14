@@ -10,7 +10,7 @@ output "lambda_function_name" {
 
 output "s3_bucket" {
   description = "S3 data bucket name"
-  value       = aws_s3_bucket.data.id
+  value       = data.aws_s3_bucket.data.id
 }
 
 output "cloudfront_images_domain" {
