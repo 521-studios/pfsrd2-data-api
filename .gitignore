@@ -1,6 +1,7 @@
 function.zip
 bootstrap
 service/tmp/
+service/local
 *.db
 *.db-shm
 *.db-wal

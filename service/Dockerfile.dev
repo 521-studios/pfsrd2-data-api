@@ -9,6 +9,9 @@ RUN go install github.com/air-verse/air@v1.61.5
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Ensure /tmp is writable when running as non-root (user: set in docker-compose)
+RUN chmod 1777 /tmp
+
 # Source files are volume-mounted at /app in docker-compose
 EXPOSE 8090
 

@@ -1,11 +1,11 @@
 // main.go — Lambda entrypoint for pfsrd2-data-api.
 //
 // On cold start:
-//   1. Load AWS config
-//   2. Download/verify SQLite DB from S3 (ETag check)
-//   3. Open SQLite connection
-//   4. Start background DB watcher
-//   5. Hand off to chi router via Lambda proxy adapter
+//  1. Load AWS config
+//  2. Download/verify SQLite DB from S3 (ETag check)
+//  3. Open SQLite connection
+//  4. Start background DB watcher
+//  5. Hand off to chi router via Lambda proxy adapter
 package main
 
 import (

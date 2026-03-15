@@ -1,0 +1,449 @@
+openapi: 3.1.0
+info:
+  title: pfsrd2-data-api
+  description: Pathfinder 2e structured data API backed by S3 and SQLite.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8090/api/pfsrd2
+    description: Local dev (docker-compose)
+  - url: https://api.lets-roll.io/api/pfsrd2
+    description: Production (Lambda + CloudFront)
+
+paths:
+  /search:
+    get:
+      operationId: search
+      summary: Full-text search across all entry types
+      parameters:
+        - name: q
+          in: query
+          description: FTS5 prefix search query
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Filter by content type (e.g. monsters, spells)
+          schema:
+            type: string
+        - name: level
+          in: query
+          description: "Filter by level — single value (\"3\") or range (\"1-5\")"
+          schema:
+            type: string
+        - name: source
+          in: query
+          description: Filter by source book name
+          schema:
+            type: string
+        - name: edition
+          in: query
+          description: Filter by edition (legacy or remastered)
+          schema:
+            type: string
+            enum: [legacy, remastered]
+        - name: traits
+          in: query
+          description: Comma-separated trait names to filter by
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResult"
+
+  /search/suggest:
+    get:
+      operationId: suggest
+      summary: Typeahead suggestions using trigram substring matching
+      description: |
+        Returns minimal entry data for typeahead/autocomplete UIs.
+        Uses a trigram index for substring matching (e.g. "dragon" matches
+        "Pseudodragon"). Requires at least 3 characters in `q`.
+        No count query — optimized for speed. Hard cap at 15 results.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search string (minimum 3 characters)
+          schema:
+            type: string
+            minLength: 3
+        - name: type
+          in: query
+          description: Content type filter. Repeat for multiple types.
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+          example: ["monsters", "npcs"]
+        - name: version
+          in: query
+          description: Only include entries that have this schema version available in S3
+          schema:
+            type: string
+          example: "1.2"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 15
+            minimum: 0
+            maximum: 15
+      responses:
+        "200":
+          description: Suggestion list (may be empty)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Suggestion"
+
+  /types:
+    get:
+      operationId: listTypes
+      summary: List all content types with entry counts
+      responses:
+        "200":
+          description: Array of types and their counts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TypeCount"
+
+  /sources:
+    get:
+      operationId: listSources
+      summary: List all source books
+      responses:
+        "200":
+          description: Array of source books
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Source"
+
+  /entries/{gameID}:
+    get:
+      operationId: getEntry
+      summary: Get entry metadata and all available schema versions
+      parameters:
+        - name: gameID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Entry with version list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entry, versions]
+                properties:
+                  entry:
+                    $ref: "#/components/schemas/Entry"
+                  versions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EntryVersion"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /entries/{gameID}/full:
+    get:
+      operationId: getEntryFull
+      summary: Get full JSON content for an entry from S3
+      parameters:
+        - name: gameID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          description: Schema version to fetch (defaults to current)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Raw JSON content from S3
+          content:
+            application/json:
+              schema: {}
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /images/{category}/{filename}:
+    get:
+      operationId: imageRedirect
+      summary: Redirect to CDN URL for an image
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to CloudFront image URL
+
+  /db/status:
+    get:
+      operationId: dbStatus
+      summary: Check local DB freshness against S3
+      responses:
+        "200":
+          description: DB sync status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DBStatus"
+
+  /db/refresh:
+    post:
+      operationId: dbRefresh
+      summary: Force re-download of the SQLite DB from S3
+      responses:
+        "200":
+          description: Refresh complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: refreshed
+
+  /{type}:
+    get:
+      operationId: listByType
+      summary: List entries of a specific content type
+      parameters:
+        - name: type
+          in: path
+          required: true
+          description: Content type (e.g. monsters, spells, feats, equipment)
+          schema:
+            type: string
+        - name: source
+          in: query
+          schema:
+            type: string
+        - name: edition
+          in: query
+          schema:
+            type: string
+            enum: [legacy, remastered]
+        - name: level
+          in: query
+          description: "Single value (\"3\") or range (\"1-5\")"
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Paginated entry list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResult"
+
+  /{type}/{schemaVersion}/{book}/{filename}:
+    get:
+      operationId: getFullJSON
+      summary: Fetch raw JSON from S3 by explicit path
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: schemaVersion
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: book
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Raw JSON content from S3
+          content:
+            application/json:
+              schema: {}
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  schemas:
+    Entry:
+      type: object
+      required: [id, game_id, type, name, current_schema_version, base_path, s3_key]
+      properties:
+        id:
+          type: integer
+          format: int64
+        game_id:
+          type: string
+        aonid:
+          type: integer
+          nullable: true
+        type:
+          type: string
+        name:
+          type: string
+        current_schema_version:
+          type: string
+        base_path:
+          type: string
+        s3_key:
+          type: string
+        level:
+          type: integer
+          nullable: true
+        source:
+          type: string
+          nullable: true
+        source_page:
+          type: integer
+          nullable: true
+        edition:
+          type: string
+          nullable: true
+        image_s3_key:
+          type: string
+          nullable: true
+        attrs:
+          description: Type-specific fields as a JSON object
+          type: object
+        indexed_at:
+          type: string
+
+    EntryVersion:
+      type: object
+      required: [game_id, schema_version, s3_key]
+      properties:
+        game_id:
+          type: string
+        schema_version:
+          type: string
+        s3_key:
+          type: string
+
+    SearchResult:
+      type: object
+      required: [results, total]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entry"
+        total:
+          type: integer
+
+    TypeCount:
+      type: object
+      required: [type, count]
+      properties:
+        type:
+          type: string
+        count:
+          type: integer
+
+    Source:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        aonid:
+          type: integer
+          nullable: true
+
+    Suggestion:
+      type: object
+      required: [game_id, name, type]
+      properties:
+        game_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        level:
+          type: integer
+          nullable: true
+        image_s3_key:
+          type: string
+          nullable: true
+
+    DBStatus:
+      type: object
+      required: [local_etag, s3_etag, up_to_date, last_checked, last_refreshed]
+      properties:
+        local_etag:
+          type: string
+        s3_etag:
+          type: string
+        up_to_date:
+          type: boolean
+        last_checked:
+          type: string
+        last_refreshed:
+          type: string
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: not found

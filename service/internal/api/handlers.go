@@ -31,6 +31,7 @@ func NewRouter(cfg Config) *chi.Mux {
 
 	r.Route("/api/pfsrd2", func(r chi.Router) {
 		r.Get("/search", h.search)
+		r.Get("/search/suggest", h.suggest)
 		r.Get("/types", h.types)
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
@@ -73,6 +74,30 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, result)
+}
+
+// ---------------------------------------------------------------------------
+// GET /search/suggest
+// ---------------------------------------------------------------------------
+
+func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if len(q) < 3 {
+		jsonOK(w, []db.Suggestion{})
+		return
+	}
+	p := db.SuggestParams{
+		Q:       q,
+		Types:   r.URL.Query()["type"],
+		Version: r.URL.Query().Get("version"),
+		Limit:   queryInt(r, "limit", 15),
+	}
+	results, err := db.Suggest(r.Context(), db.Global(), p)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, results)
 }
 
 // ---------------------------------------------------------------------------
