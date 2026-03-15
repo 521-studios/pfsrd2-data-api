@@ -6,7 +6,7 @@ services:
     volumes:
       - ./service:/app        # source mount for Air hot-reload
       - pfsrd2-db:/tmp        # persistent DB volume (survives restarts)
-      - ${HOME}/.aws:/root/.aws:ro
+      - ${REAL_HOME}/.aws:/root/.aws:ro
     environment:
       - BUCKET_NAME=521studios-staging-pfsrd2-data
       - AWS_PROFILE=521-Staging-Admin
