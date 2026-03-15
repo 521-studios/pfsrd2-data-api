@@ -329,6 +329,84 @@ func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Suggest (typeahead)
+// ---------------------------------------------------------------------------
+
+// Suggestion is a minimal entry for typeahead results.
+type Suggestion struct {
+	GameID     string  `json:"game_id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Level      *int    `json:"level,omitempty"`
+	ImageS3Key *string `json:"image_s3_key,omitempty"`
+}
+
+// SuggestParams for GET /search/suggest.
+type SuggestParams struct {
+	Q       string   // trigram search query (min 3 chars)
+	Types   []string // content types to include
+	Version string   // only entries with this schema version in entry_versions
+	Limit   int      // hard cap at 15
+}
+
+// Suggest runs a trigram substring search, returning minimal results for typeahead.
+func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, error) {
+	if len(p.Q) < 3 {
+		return nil, nil
+	}
+	if p.Limit <= 0 || p.Limit > 15 {
+		p.Limit = 15
+	}
+
+	args := []any{}
+	conds := []string{
+		"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)",
+	}
+	args = append(args, p.Q)
+
+	if len(p.Types) > 0 {
+		placeholders := make([]string, len(p.Types))
+		for i, t := range p.Types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if p.Version != "" {
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
+		args = append(args, p.Version)
+	}
+
+	where := strings.Join(conds, " AND ")
+	query := fmt.Sprintf(`
+		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
+		FROM entries e
+		WHERE %s
+		ORDER BY e.name ASC
+		LIMIT ?
+	`, where)
+	args = append(args, p.Limit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("suggest: %w", err)
+	}
+	defer rows.Close()
+
+	var results []Suggestion
+	for rows.Next() {
+		var s Suggestion
+		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {
+			return nil, fmt.Errorf("scan suggestion: %w", err)
+		}
+		results = append(results, s)
+	}
+	return results, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
 // Row scanning helpers
 // ---------------------------------------------------------------------------
 
