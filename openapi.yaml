@@ -90,7 +90,7 @@ paths:
             type: array
             items:
               type: string
-          example: [monsters, npcs]
+          example: ["monsters", "npcs"]
         - name: version
           in: query
           description: Only include entries that have this schema version available in S3
@@ -358,6 +358,7 @@ components:
           nullable: true
         attrs:
           description: Type-specific fields as a JSON object
+          type: object
         indexed_at:
           type: string
 
@@ -431,10 +432,8 @@ components:
           type: boolean
         last_checked:
           type: string
-          format: date-time
         last_refreshed:
           type: string
-          format: date-time
 
   responses:
     NotFound:

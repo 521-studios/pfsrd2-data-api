@@ -83,7 +83,7 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if len(q) < 3 {
-		jsonOK(w, []any{})
+		jsonOK(w, []db.Suggestion{})
 		return
 	}
 	p := db.SuggestParams{
