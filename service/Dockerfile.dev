@@ -1,10 +1,10 @@
 # Dev container with Air hot-reload
-FROM golang:1.22-bookworm
+FROM golang:1.24-bookworm
 
 WORKDIR /app
 
 # Install Air for hot reload
-RUN go install github.com/air-verse/air@latest
+RUN go install github.com/air-verse/air@v1.61.5
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,4 +12,5 @@ RUN go mod download
 # Source files are volume-mounted at /app in docker-compose
 EXPOSE 8090
 
+# Air watches for file changes and rebuilds ./cmd/local (see .air.toml)
 CMD ["air", "-c", ".air.toml"]

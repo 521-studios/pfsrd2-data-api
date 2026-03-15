@@ -17,7 +17,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-2
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.24"
   TF_VERSION: "1.9.0"
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
         working-directory: service
         run: |
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            go build -ldflags="-s -w" -o bootstrap .
+            go build -ldflags="-s -w" -o bootstrap ./cmd/lambda
           zip ../function.zip bootstrap
 
       - uses: hashicorp/setup-terraform@v3
@@ -118,7 +118,7 @@ jobs:
         working-directory: service
         run: |
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            go build -ldflags="-s -w" -o bootstrap .
+            go build -ldflags="-s -w" -o bootstrap ./cmd/lambda
           zip ../function.zip bootstrap
 
       - uses: hashicorp/setup-terraform@v3
