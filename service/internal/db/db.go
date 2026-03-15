@@ -395,7 +395,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	}
 	defer rows.Close()
 
-	var results []Suggestion
+	results := make([]Suggestion, 0)
 	for rows.Next() {
 		var s Suggestion
 		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {

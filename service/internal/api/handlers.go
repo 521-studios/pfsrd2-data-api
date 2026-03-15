@@ -97,9 +97,6 @@ func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if results == nil {
-		results = []db.Suggestion{}
-	}
 	jsonOK(w, results)
 }
 
