@@ -102,6 +102,7 @@ paths:
           schema:
             type: integer
             default: 15
+            minimum: 0
             maximum: 15
       responses:
         "200":

@@ -1,8 +1,9 @@
 // cmd/local/main.go — Local dev server (plain net/http, no Lambda).
 //
 // Usage:
-//   go run ./cmd/local
-//   PORT=8090 BUCKET_NAME=521studios-staging-pfsrd2-data go run ./cmd/local
+//
+//	go run ./cmd/local
+//	PORT=8090 BUCKET_NAME=521studios-staging-pfsrd2-data go run ./cmd/local
 //
 // With Air hot-reload this is recompiled automatically on source changes.
 package main

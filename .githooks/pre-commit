@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit hook: ensure Go files are formatted.
+# Install: git config core.hooksPath .githooks
+
+unformatted=$(gofmt -l service/ 2>/dev/null)
+if [ -n "$unformatted" ]; then
+    echo "❌ gofmt: these files need formatting:"
+    echo "$unformatted"
+    echo ""
+    echo "Run: gofmt -w service/"
+    exit 1
+fi

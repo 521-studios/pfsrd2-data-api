@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	dbPath  = "/tmp/pfsrd2.db"
+	dbPath   = "/tmp/pfsrd2.db"
 	etagPath = "/tmp/.db_etag"
 )
 

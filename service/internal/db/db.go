@@ -26,7 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	globalDB *sql.DB
 )
 
@@ -352,7 +352,7 @@ type SuggestParams struct {
 // Suggest runs a trigram substring search, returning minimal results for typeahead.
 func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, error) {
 	if len(p.Q) < 3 {
-		return nil, nil
+		return []Suggestion{}, nil
 	}
 	if p.Limit <= 0 || p.Limit > 15 {
 		p.Limit = 15
@@ -395,7 +395,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	}
 	defer rows.Close()
 
-	results := make([]Suggestion, 0)
+	results := make([]Suggestion, 0, p.Limit)
 	for rows.Next() {
 		var s Suggestion
 		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {
@@ -436,7 +436,13 @@ type singleRow struct {
 	done bool
 }
 
-func (s *singleRow) Next() bool  { if s.done { return false }; s.done = true; return true }
+func (s *singleRow) Next() bool {
+	if s.done {
+		return false
+	}
+	s.done = true
+	return true
+}
 func (s *singleRow) Scan(d ...any) error { return s.w.Scan(d...) }
 func (s *singleRow) Close() error        { return nil }
 func (s *singleRow) Err() error          { return nil }
