@@ -36,6 +36,7 @@ func requestLogger(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", r.URL.RequestURI(),
 			"status", sw.status,
+			"bytes", sw.bytes,
 			"duration", time.Since(start).Round(time.Millisecond),
 		)
 	})
@@ -44,6 +45,7 @@ func requestLogger(next http.Handler) http.Handler {
 type statusWriter struct {
 	http.ResponseWriter
 	status      int
+	bytes       int
 	wroteHeader bool
 }
 
@@ -60,7 +62,9 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	return w.ResponseWriter.Write(b)
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += n
+	return n, err
 }
 
 func NewRouter(cfg Config) *chi.Mux {
