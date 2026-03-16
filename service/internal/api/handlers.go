@@ -3,7 +3,7 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,7 +32,12 @@ func requestLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(sw, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.RequestURI(), sw.status, time.Since(start).Round(time.Millisecond))
+		slog.Info("request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", sw.status,
+			"duration", time.Since(start).Round(time.Millisecond),
+		)
 	})
 }
 

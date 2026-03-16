@@ -371,7 +371,19 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	hasTrailingSpace := len(p.Q) > len(trimmed)
 	words := strings.Fields(trimmed)
 
-	if len(words) == 0 || len(words[0]) < 3 {
+	if len(words) == 0 {
+		return []Suggestion{}, nil
+	}
+	// Require at least one word with 3+ chars for trigram efficiency.
+	// Without it, we'd fall back to pure LIKE scans on the full table.
+	hasTrigram := false
+	for _, w := range words {
+		if len(w) >= 3 {
+			hasTrigram = true
+			break
+		}
+	}
+	if !hasTrigram {
 		return []Suggestion{}, nil
 	}
 	if p.Limit <= 0 || p.Limit > 15 {
