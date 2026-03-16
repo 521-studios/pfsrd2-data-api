@@ -355,3 +355,35 @@ func TestSuggest_PrefixMatchFirst(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetByGameID tests
+// ---------------------------------------------------------------------------
+
+func TestGetByGameID_Found(t *testing.T) {
+	db := testDB(t)
+	entry, err := GetByGameID(context.Background(), db, "Monsters:100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected entry, got nil")
+	}
+	if entry.Name != "Adult Red Dragon" {
+		t.Errorf("expected 'Adult Red Dragon', got %q", entry.Name)
+	}
+	if entry.GameID != "Monsters:100" {
+		t.Errorf("expected game_id 'Monsters:100', got %q", entry.GameID)
+	}
+}
+
+func TestGetByGameID_NotFound(t *testing.T) {
+	db := testDB(t)
+	entry, err := GetByGameID(context.Background(), db, "Monsters:99999")
+	if err != nil {
+		t.Fatalf("expected nil error for missing entry, got: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected nil entry, got %+v", entry)
+	}
+}
