@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -286,8 +287,27 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 func (h *handler) imageRedirect(w http.ResponseWriter, r *http.Request) {
 	category := chi.URLParam(r, "category")
 	filename := chi.URLParam(r, "filename")
-	url := "https://" + h.cfg.ImageDomain + "/pfsrd2/images/" + category + "/" + filename
-	http.Redirect(w, r, url, http.StatusFound)
+	key := "images/" + category + "/" + filename
+
+	body, err := h.cfg.S3Client.GetObject(r.Context(), key)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer body.Close()
+
+	// Set content type based on extension
+	switch {
+	case strings.HasSuffix(filename, ".webp"):
+		w.Header().Set("Content-Type", "image/webp")
+	case strings.HasSuffix(filename, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	case strings.HasSuffix(filename, ".jpg"), strings.HasSuffix(filename, ".jpeg"):
+		w.Header().Set("Content-Type", "image/jpeg")
+	}
+
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	io.Copy(w, body)
 }
 
 // ---------------------------------------------------------------------------
