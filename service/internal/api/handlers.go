@@ -3,8 +3,11 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -79,7 +82,7 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
-		r.Get("/images/{category}/{filename}", h.imageRedirect)
+		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
 
@@ -283,11 +286,39 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 // GET /images/{category}/{filename}
 // ---------------------------------------------------------------------------
 
-func (h *handler) imageRedirect(w http.ResponseWriter, r *http.Request) {
+func (h *handler) serveImage(w http.ResponseWriter, r *http.Request) {
 	category := chi.URLParam(r, "category")
 	filename := chi.URLParam(r, "filename")
-	url := "https://" + h.cfg.ImageDomain + "/pfsrd2/images/" + category + "/" + filename
-	http.Redirect(w, r, url, http.StatusFound)
+
+	if strings.Contains(category, "..") || strings.Contains(filename, "..") ||
+		strings.Contains(category, "/") || strings.Contains(filename, "/") {
+		http.Error(w, "invalid path component", http.StatusBadRequest)
+		return
+	}
+
+	key := "images/" + category + "/" + filename
+
+	body, err := h.cfg.S3Client.GetObject(r.Context(), key)
+	if err != nil {
+		if isNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			slog.ErrorContext(r.Context(), "failed to get image from s3", "key", key, "err", err)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}
+		return
+	}
+	defer body.Close()
+
+	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if _, err := io.Copy(w, body); err != nil {
+		slog.ErrorContext(r.Context(), "failed to write image to response", "key", key, "err", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
