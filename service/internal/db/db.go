@@ -393,13 +393,14 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 
 		if isComplete {
 			// Word-boundary match: word must appear as a whole word in the name
+			lowerWord := strings.ToLower(word)
 			conds = append(conds,
-				"(e.name LIKE ? OR e.name LIKE ? OR e.name LIKE ? OR LOWER(e.name) = LOWER(?))")
-			args = append(args, word+" %", "% "+word+" %", "% "+word, word)
+				"(LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) = ?)")
+			args = append(args, lowerWord+" %", "% "+lowerWord+" %", "% "+lowerWord, lowerWord)
 		} else if len(word) < 3 {
 			// Short partial word at end — LIKE substring fallback
-			conds = append(conds, "e.name LIKE ?")
-			args = append(args, "%"+word+"%")
+			conds = append(conds, "LOWER(e.name) LIKE ?")
+			args = append(args, "%"+strings.ToLower(word)+"%")
 		}
 	}
 
@@ -425,10 +426,10 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
 		FROM entries e
 		WHERE %s
-		ORDER BY CASE WHEN e.name LIKE ? THEN 0 ELSE 1 END, e.name ASC
+		ORDER BY CASE WHEN LOWER(e.name) LIKE ? THEN 0 ELSE 1 END, e.name ASC
 		LIMIT ?
 	`, where)
-	args = append(args, trimmed+"%", p.Limit)
+	args = append(args, strings.ToLower(trimmed)+"%", p.Limit)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
