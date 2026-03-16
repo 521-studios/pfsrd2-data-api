@@ -82,6 +82,10 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		{"Monsters:102", "monsters", "Young Blue Dragon", "1.3", "monsters/bestiary/young_blue_dragon.json", "json/monsters/1.3/bestiary/young_blue_dragon.json", 9, "Bestiary", "legacy", nil},
 		{"NPCs:200", "npcs", "Dragon Cultist", "1.3", "npcs/gamemastery_guide/dragon_cultist.json", "json/npcs/1.3/gamemastery_guide/dragon_cultist.json", 3, "Gamemastery Guide", "remastered", nil},
 		{"Spells:300", "spells", "Dragon Breath", "1.3", "spells/core_rulebook/dragon_breath.json", "json/spells/1.3/core_rulebook/dragon_breath.json", 4, "Core Rulebook", "remastered", nil},
+		{"Monsters:400", "monsters", "Orc Brute", "1.3", "monsters/bestiary/orc_brute.json", "json/monsters/1.3/bestiary/orc_brute.json", 0, "Bestiary", "remastered", nil},
+		{"Monsters:401", "monsters", "Orc Warchief", "1.3", "monsters/bestiary/orc_warchief.json", "json/monsters/1.3/bestiary/orc_warchief.json", 2, "Bestiary", "remastered", nil},
+		{"Monsters:402", "monsters", "Giant Porcupine", "1.3", "monsters/bestiary/giant_porcupine.json", "json/monsters/1.3/bestiary/giant_porcupine.json", 2, "Bestiary", "remastered", nil},
+		{"Monsters:403", "monsters", "Orc Warrior", "1.3", "monsters/bestiary/orc_warrior.json", "json/monsters/1.3/bestiary/orc_warrior.json", 1, "Bestiary", "remastered", nil},
 	}
 
 	for _, e := range entries {
@@ -273,5 +277,113 @@ func TestSuggest_NoMatch(t *testing.T) {
 	}
 	if results == nil {
 		t.Error("expected non-nil empty slice, got nil")
+	}
+}
+
+func TestSuggest_WordBoundary(t *testing.T) {
+	db := testDB(t)
+	// "orc" matches substring: Orc Brute, Orc Warchief, Giant Porcupine, Orc Warrior
+	results, err := Suggest(context.Background(), db, SuggestParams{
+		Q:     "orc",
+		Types: []string{"monsters"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 4 {
+		t.Errorf("expected 4 results for 'orc' substring, got %d", len(results))
+		for _, r := range results {
+			t.Logf("  %s", r.Name)
+		}
+	}
+
+	// "orc " (trailing space) should filter to word-boundary only — no Porcupine
+	results, err = Suggest(context.Background(), db, SuggestParams{
+		Q:     "orc ",
+		Types: []string{"monsters"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results for 'orc ' word-boundary, got %d", len(results))
+		for _, r := range results {
+			t.Logf("  %s", r.Name)
+		}
+	}
+	for _, r := range results {
+		if r.Name == "Giant Porcupine" {
+			t.Error("Porcupine should not match word-boundary 'orc '")
+		}
+	}
+}
+
+func TestSuggest_MultiWordPartial(t *testing.T) {
+	db := testDB(t)
+	// "orc w" — "orc" is complete word, "w" is partial substring
+	results, err := Suggest(context.Background(), db, SuggestParams{
+		Q:     "orc w",
+		Types: []string{"monsters"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should match: Orc Warchief, Orc Warrior (orc at word boundary + contains "w")
+	if len(results) != 2 {
+		t.Errorf("expected 2 results for 'orc w', got %d", len(results))
+		for _, r := range results {
+			t.Logf("  %s", r.Name)
+		}
+	}
+}
+
+func TestSuggest_PrefixMatchFirst(t *testing.T) {
+	db := testDB(t)
+	// "dragon" should return prefix matches (Dragon Cultist, Dragon Breath) before
+	// substring matches (Adult Red Dragon, Pseudodragon, Young Blue Dragon)
+	results, err := Suggest(context.Background(), db, SuggestParams{Q: "dragon"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+	// First results should be prefix matches
+	for _, r := range results[:2] {
+		if r.Name != "Dragon Breath" && r.Name != "Dragon Cultist" {
+			t.Errorf("expected prefix match in first 2 results, got %q", r.Name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetByGameID tests
+// ---------------------------------------------------------------------------
+
+func TestGetByGameID_Found(t *testing.T) {
+	db := testDB(t)
+	entry, err := GetByGameID(context.Background(), db, "Monsters:100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected entry, got nil")
+	}
+	if entry.Name != "Adult Red Dragon" {
+		t.Errorf("expected 'Adult Red Dragon', got %q", entry.Name)
+	}
+	if entry.GameID != "Monsters:100" {
+		t.Errorf("expected game_id 'Monsters:100', got %q", entry.GameID)
+	}
+}
+
+func TestGetByGameID_NotFound(t *testing.T) {
+	db := testDB(t)
+	entry, err := GetByGameID(context.Background(), db, "Monsters:99999")
+	if err != nil {
+		t.Fatalf("expected nil error for missing entry, got: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected nil entry, got %+v", entry)
 	}
 }

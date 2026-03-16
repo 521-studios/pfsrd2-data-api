@@ -156,3 +156,38 @@ func TestSuggestHandler_EmptyQuery(t *testing.T) {
 		t.Errorf("expected empty array, got %d results", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// statusWriter tests
+// ---------------------------------------------------------------------------
+
+func TestStatusWriter_CapturesExplicitStatus(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: inner, status: 200}
+	sw.WriteHeader(404)
+	if sw.status != 404 {
+		t.Errorf("expected 404, got %d", sw.status)
+	}
+}
+
+func TestStatusWriter_CapturesImplicitOK(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: inner, status: 200}
+	sw.Write([]byte("hello"))
+	if sw.status != 200 {
+		t.Errorf("expected 200, got %d", sw.status)
+	}
+	if !sw.wroteHeader {
+		t.Error("expected wroteHeader to be true after Write")
+	}
+}
+
+func TestStatusWriter_DoubleWriteHeaderIgnored(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: inner, status: 200}
+	sw.WriteHeader(201)
+	sw.WriteHeader(500) // should be ignored
+	if sw.status != 201 {
+		t.Errorf("expected 201 (first call wins), got %d", sw.status)
+	}
+}

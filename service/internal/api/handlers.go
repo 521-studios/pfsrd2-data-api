@@ -3,9 +3,11 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -25,8 +27,49 @@ type Config struct {
 // Router
 // ---------------------------------------------------------------------------
 
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(sw, r)
+		slog.Info("request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", sw.status,
+			"bytes", sw.bytes,
+			"duration", time.Since(start).Round(time.Millisecond),
+		)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int
+	wroteHeader bool
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = code
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += n
+	return n, err
+}
+
 func NewRouter(cfg Config) *chi.Mux {
 	r := chi.NewRouter()
+	r.Use(requestLogger)
 	h := &handler{cfg: cfg}
 
 	r.Route("/api/pfsrd2", func(r chi.Router) {
