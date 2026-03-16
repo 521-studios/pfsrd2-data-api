@@ -289,6 +289,13 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 func (h *handler) serveImage(w http.ResponseWriter, r *http.Request) {
 	category := chi.URLParam(r, "category")
 	filename := chi.URLParam(r, "filename")
+
+	if strings.Contains(category, "..") || strings.Contains(filename, "..") ||
+		strings.Contains(category, "/") || strings.Contains(filename, "/") {
+		http.Error(w, "invalid path component", http.StatusBadRequest)
+		return
+	}
+
 	key := "images/" + category + "/" + filename
 
 	body, err := h.cfg.S3Client.GetObject(r.Context(), key)
@@ -309,7 +316,9 @@ func (h *handler) serveImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	io.Copy(w, body)
+	if _, err := io.Copy(w, body); err != nil {
+		slog.ErrorContext(r.Context(), "failed to write image to response", "key", key, "err", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
