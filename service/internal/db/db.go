@@ -252,14 +252,22 @@ func GetByGameID(ctx context.Context, db *sql.DB, gameID string) (*Entry, error)
 		       image_s3_key, attrs, indexed_at
 		FROM entries WHERE game_id = ?
 	`, gameID)
-	entries, err := scanEntries(wrappedRow{row})
-	if err != nil {
-		return nil, err
-	}
-	if len(entries) == 0 {
+	var e Entry
+	var attrsStr string
+	err := row.Scan(
+		&e.ID, &e.GameID, &e.AonID, &e.Type, &e.Name,
+		&e.CurrentSchemaVersion, &e.BasePath, &e.S3Key,
+		&e.Level, &e.Source, &e.SourcePage, &e.Edition,
+		&e.ImageS3Key, &attrsStr, &e.IndexedAt,
+	)
+	if err == sql.ErrNoRows {
 		return nil, nil
 	}
-	return &entries[0], nil
+	if err != nil {
+		return nil, fmt.Errorf("get entry: %w", err)
+	}
+	e.Attrs = json.RawMessage(attrsStr)
+	return &e, nil
 }
 
 // GetVersions returns all known schema versions for a game_id.
@@ -350,8 +358,20 @@ type SuggestParams struct {
 }
 
 // Suggest runs a trigram substring search, returning minimal results for typeahead.
+//
+// Query handling:
+//   - Split on spaces into words
+//   - Each word >= 3 chars: trigram MATCH for fast substring candidate lookup
+//   - Each completed word (followed by a space): word-boundary LIKE filter
+//   - Last word (no trailing space): trigram substring match only
+//   - Short words (< 3 chars) after a space: LIKE substring fallback
+//   - Results sorted: prefix matches first, then alphabetical
 func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, error) {
-	if len(p.Q) < 3 {
+	trimmed := strings.TrimRight(p.Q, " ")
+	hasTrailingSpace := len(p.Q) > len(trimmed)
+	words := strings.Fields(trimmed)
+
+	if len(words) == 0 || len(words[0]) < 3 {
 		return []Suggestion{}, nil
 	}
 	if p.Limit <= 0 || p.Limit > 15 {
@@ -359,10 +379,29 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	}
 
 	args := []any{}
-	conds := []string{
-		"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)",
+	conds := []string{}
+
+	for i, word := range words {
+		isComplete := i < len(words)-1 || hasTrailingSpace
+
+		if len(word) >= 3 {
+			// Trigram match for substring candidates
+			conds = append(conds,
+				"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)")
+			args = append(args, word)
+		}
+
+		if isComplete {
+			// Word-boundary match: word must appear as a whole word in the name
+			conds = append(conds,
+				"(e.name LIKE ? OR e.name LIKE ? OR e.name LIKE ? OR LOWER(e.name) = LOWER(?))")
+			args = append(args, word+" %", "% "+word+" %", "% "+word, word)
+		} else if len(word) < 3 {
+			// Short partial word at end — LIKE substring fallback
+			conds = append(conds, "e.name LIKE ?")
+			args = append(args, "%"+word+"%")
+		}
 	}
-	args = append(args, p.Q)
 
 	if len(p.Types) > 0 {
 		placeholders := make([]string, len(p.Types))
@@ -380,14 +419,16 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	}
 
 	where := strings.Join(conds, " AND ")
+
+	// Sort: prefix matches first, then alphabetical
 	query := fmt.Sprintf(`
 		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
 		FROM entries e
 		WHERE %s
-		ORDER BY e.name ASC
+		ORDER BY CASE WHEN e.name LIKE ? THEN 0 ELSE 1 END, e.name ASC
 		LIMIT ?
 	`, where)
-	args = append(args, p.Limit)
+	args = append(args, trimmed+"%", p.Limit)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
