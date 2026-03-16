@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +82,7 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
-		r.Get("/images/{category}/{filename}", h.imageRedirect)
+		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
 
@@ -284,28 +286,28 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 // GET /images/{category}/{filename}
 // ---------------------------------------------------------------------------
 
-func (h *handler) imageRedirect(w http.ResponseWriter, r *http.Request) {
+func (h *handler) serveImage(w http.ResponseWriter, r *http.Request) {
 	category := chi.URLParam(r, "category")
 	filename := chi.URLParam(r, "filename")
 	key := "images/" + category + "/" + filename
 
 	body, err := h.cfg.S3Client.GetObject(r.Context(), key)
 	if err != nil {
-		http.NotFound(w, r)
+		if isNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			slog.ErrorContext(r.Context(), "failed to get image from s3", "key", key, "err", err)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}
 		return
 	}
 	defer body.Close()
 
-	// Set content type based on extension
-	switch {
-	case strings.HasSuffix(filename, ".webp"):
-		w.Header().Set("Content-Type", "image/webp")
-	case strings.HasSuffix(filename, ".png"):
-		w.Header().Set("Content-Type", "image/png")
-	case strings.HasSuffix(filename, ".jpg"), strings.HasSuffix(filename, ".jpeg"):
-		w.Header().Set("Content-Type", "image/jpeg")
+	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
-
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	io.Copy(w, body)
 }
