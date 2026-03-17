@@ -357,6 +357,59 @@ type SuggestParams struct {
 	Limit   int      // hard cap at 15
 }
 
+// suggestShortQuery handles queries where all words are < 3 chars (too short for trigrams).
+// Falls back to an exact name match so creatures like "I" can still be found.
+func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query string) ([]Suggestion, error) {
+	if p.Limit <= 0 || p.Limit > 15 {
+		p.Limit = 15
+	}
+
+	args := []any{}
+	conds := []string{"LOWER(e.name) = ?"}
+	args = append(args, strings.ToLower(query))
+
+	if len(p.Types) > 0 {
+		placeholders := make([]string, len(p.Types))
+		for i, t := range p.Types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if p.Version != "" {
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
+		args = append(args, p.Version)
+	}
+
+	where := strings.Join(conds, " AND ")
+	sqlQuery := fmt.Sprintf(`
+		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
+		FROM entries e
+		WHERE %s
+		ORDER BY e.name ASC
+		LIMIT ?
+	`, where)
+	args = append(args, p.Limit)
+
+	rows, err := db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("suggest short query: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]Suggestion, 0, p.Limit)
+	for rows.Next() {
+		var s Suggestion
+		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {
+			return nil, fmt.Errorf("scan suggestion: %w", err)
+		}
+		results = append(results, s)
+	}
+	return results, rows.Err()
+}
+
 // Suggest runs a trigram substring search, returning minimal results for typeahead.
 //
 // Query handling:
@@ -384,7 +437,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 		}
 	}
 	if !hasTrigram {
-		return []Suggestion{}, nil
+		return suggestShortQuery(ctx, db, p, trimmed)
 	}
 	if p.Limit <= 0 || p.Limit > 15 {
 		p.Limit = 15
