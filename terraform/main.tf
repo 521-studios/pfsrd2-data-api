@@ -84,6 +84,7 @@ resource "aws_iam_policy" "lambda_s3" {
         Resource = [
           "${aws_s3_bucket.data.arn}/db/*",
           "${aws_s3_bucket.data.arn}/json/*",
+          "${aws_s3_bucket.data.arn}/images/*",
         ]
       },
     ]
