@@ -309,3 +309,106 @@ func TestApply_Chaining_EliteThenWeak(t *testing.T) {
 		t.Errorf("expected AC 37 after elite+weak, got %v", ac)
 	}
 }
+
+func TestApply_AddModifier_AppendsToArray(t *testing.T) {
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"offense": map[string]any{
+				"offensive_actions": []any{
+					map[string]any{
+						"attack": map[string]any{
+							"damage": []any{
+								map[string]any{"formula": "1d8+4", "damage_type": "slashing"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					ChangeCategory: "damage",
+					Text:           "Add damage modifier",
+					Effects: []Effect{
+						{
+							Conditional: "default",
+							Target:      "$.offense.offensive_actions[*].attack.damage",
+							Operation:   "add_modifier",
+							Modifier:    map[string]any{"type": "stat_block_section", "subtype": "modifier", "name": "+2 damage (elite)"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Check that the damage array now has the modifier appended
+	actions := resp.Creature["stat_block"].(map[string]any)["offense"].(map[string]any)["offensive_actions"].([]any)
+	damage := actions[0].(map[string]any)["attack"].(map[string]any)["damage"].([]any)
+	if len(damage) != 2 {
+		t.Fatalf("expected 2 damage entries (original + modifier), got %d", len(damage))
+	}
+	mod := damage[1].(map[string]any)
+	if mod["name"] != "+2 damage (elite)" {
+		t.Errorf("expected modifier name '+2 damage (elite)', got %v", mod["name"])
+	}
+}
+
+func TestApply_AddModifier_MissingTarget(t *testing.T) {
+	// When the target path doesn't exist, add_modifier is a no-op (path resolver
+	// returns no results for missing fields). This is correct — the template
+	// conditional guards should prevent this case in practice.
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"offense": map[string]any{
+				"offensive_actions": []any{
+					map[string]any{
+						"ability": map[string]any{
+							"name": "Breath Weapon",
+							// no "damage" field
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					ChangeCategory: "damage",
+					Text:           "Add damage modifier to ability",
+					Effects: []Effect{
+						{
+							Target:    "$.offense.offensive_actions[*].ability.damage",
+							Operation: "add_modifier",
+							Modifier:  map[string]any{"type": "stat_block_section", "subtype": "modifier", "name": "+4 damage"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// No patches should be generated (target doesn't exist)
+	if len(resp.PatchDoc.AppliedPatches) != 0 {
+		t.Errorf("expected no patches for missing target, got %d", len(resp.PatchDoc.AppliedPatches))
+	}
+}

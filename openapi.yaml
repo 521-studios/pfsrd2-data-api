@@ -725,7 +725,7 @@ components:
       properties:
         op:
           type: string
-          enum: [add, remove, replace, move, copy, test]
+          enum: [add, remove, replace]
         path:
           description: "JSON Pointer (RFC 6901) into the creature document"
           type: string
@@ -743,6 +743,12 @@ components:
         multipart/mixed:
           schema:
             type: object
+            properties:
+              patches:
+                $ref: "#/components/schemas/PatchDocument"
+              creature:
+                description: Full modified creature JSON
+                type: object
           encoding:
             patches:
               contentType: application/json

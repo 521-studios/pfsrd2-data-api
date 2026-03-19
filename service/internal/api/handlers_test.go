@@ -844,3 +844,23 @@ func TestSuggestUnified_EmptyQuery(t *testing.T) {
 		t.Errorf("expected empty array, got %d results", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Helper function tests
+// ---------------------------------------------------------------------------
+
+func TestCreatureEditionFromJSON(t *testing.T) {
+	// With edition
+	creature := map[string]any{"edition": "legacy"}
+	ed := creatureEditionFromJSON(creature)
+	if ed == nil || *ed != "legacy" {
+		t.Errorf("expected 'legacy', got %v", ed)
+	}
+
+	// Without edition
+	creature2 := map[string]any{"name": "Test"}
+	ed2 := creatureEditionFromJSON(creature2)
+	if ed2 != nil {
+		t.Errorf("expected nil, got %v", ed2)
+	}
+}
