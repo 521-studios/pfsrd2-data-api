@@ -63,3 +63,193 @@ Review code changes to **ensure the OpenAPI spec (`openapi.yaml`) stays in sync 
 3. Check that Go struct field names and JSON tags match the schema property names
 4. Verify request/response examples are plausible
 5. Flag any drift between code and spec
+
+## error-handling-reviewer
+
+Review Go code for **error handling correctness**. Go's explicit error returns are powerful but easy to misuse — unchecked errors are silent bugs.
+
+**Patterns to FLAG:**
+
+1. **Unchecked error returns:**
+   ```go
+   // BAD — error silently discarded
+   file.Close()
+   json.Unmarshal(data, &v)
+   db.Exec("DELETE FROM entries")
+
+   // GOOD
+   if err := file.Close(); err != nil { ... }
+   ```
+
+2. **Errors assigned to `_`:**
+   ```go
+   // BAD — intentionally discarding
+   _, _ = fmt.Fprintf(w, "hello")
+   ```
+   Only acceptable when documented with a comment explaining why.
+
+3. **Missing error wrapping (no context):**
+   ```go
+   // BAD — caller has no idea where this came from
+   return err
+
+   // GOOD
+   return fmt.Errorf("fetch template %s: %w", gameID, err)
+   ```
+
+4. **`defer` calls that swallow errors:**
+   ```go
+   // BAD — Close() error lost
+   defer resp.Body.Close()
+
+   // Acceptable for read-only bodies, but flag for writers/flushers
+   ```
+
+5. **Error checks after multiple statements:**
+   ```go
+   // BAD — which call failed?
+   a := doA()
+   b := doB()
+   if err != nil { ... }
+   ```
+
+6. **Bare `return` after partial writes to `http.ResponseWriter`:**
+   Once headers are written, you can't change the status code. Flag cases where an error after `WriteHeader` or `Write` silently returns without logging.
+
+**Do NOT flag:**
+- `defer rows.Close()` — standard database/sql pattern, errors are informational
+- `defer body.Close()` on read-only HTTP response bodies
+- `_ = json.NewEncoder(w).Encode(v)` in HTTP handlers where the connection may already be broken (but prefer logging)
+
+**Review approach:**
+1. Search for function calls whose return values include `error` but aren't checked
+2. Look for `err` variables that are checked late or not at all
+3. Verify `fmt.Errorf` wrapping adds meaningful context
+4. Check `defer` calls on writers/flushers for lost errors
+
+## complexity-reviewer
+
+Review **production code only** for function complexity. **Skip all `*_test.go` files** — test files often have long table-driven tests and helpers that don't need the same constraints.
+
+Apply these heuristics:
+
+1. **"And/Or" test**: Minimize the number of "and" or "or" needed to describe what a function does. If you need multiple conjunctions, the function is doing too much.
+   - Good: "This function resolves a JSONPath against a stat block"
+   - Bad: "This function resolves paths AND expands wildcards AND handles missing fields AND returns resolved values"
+
+2. **One-screen rule**: Functions should fit on one screen (~50-60 lines). Longer functions are harder to reason about.
+   - **Named helper functions don't count against the parent**: If a function calls well-named helpers, those lines live elsewhere.
+   - Go's error handling naturally inflates line counts — use judgment. A function that's 70 lines but 20 of those are `if err != nil` blocks is fine.
+
+3. **Extractable blocks**: If a block of code within a function has a clear purpose, consider extraction:
+   - **First choice**: Package-level unexported function if reusable within the package
+   - **Second choice**: Method on the relevant type
+   - **Last choice**: Inline closure if truly specific to the parent
+
+4. **Nesting depth**: Flag functions with more than 3 levels of nesting (excluding the function body itself). Deep nesting makes control flow hard to follow.
+   - Go idiom: use early returns to reduce nesting (`if err != nil { return }`)
+
+**Do NOT flag:**
+- Test files (`*_test.go`)
+- Functions that are long but linear (no branching, just sequential steps like a pipeline)
+- `switch` statements with many cases (these are inherently flat, not complex)
+- Functions whose length comes primarily from Go error handling boilerplate
+
+**Note:** It is acceptable to acknowledge complexity and defer refactoring by creating a beads ticket, rather than fixing it in the current PR.
+
+## sql-injection-reviewer
+
+Review Go code for **SQL injection vulnerabilities**. All database queries must use parameterized statements.
+
+**Patterns to FLAG (critical severity):**
+
+1. **String concatenation in SQL:**
+   ```go
+   // BAD — injection vector
+   query := "SELECT * FROM entries WHERE name = '" + name + "'"
+   query := fmt.Sprintf("SELECT * FROM entries WHERE game_id = '%s'", gameID)
+   ```
+
+2. **fmt.Sprintf for query values:**
+   ```go
+   // BAD — user input in Sprintf
+   db.QueryContext(ctx, fmt.Sprintf("WHERE type = '%s'", userInput))
+   ```
+
+3. **String interpolation in queries:**
+   ```go
+   // BAD
+   db.Exec(`DELETE FROM entries WHERE id = ` + id)
+   ```
+
+**Acceptable patterns:**
+
+1. **Parameterized queries (the only correct way):**
+   ```go
+   // GOOD
+   db.QueryContext(ctx, "SELECT * FROM entries WHERE game_id = ?", gameID)
+   ```
+
+2. **fmt.Sprintf for structural SQL (not values):**
+   ```go
+   // GOOD — table structure, not user values
+   query := fmt.Sprintf("SELECT %s FROM %s WHERE %s LIMIT ? OFFSET ?", cols, table, where)
+   ```
+   But flag if any of the Sprintf arguments could contain user input.
+
+3. **Dynamic WHERE clause construction with placeholders:**
+   ```go
+   // GOOD — placeholders built dynamically, values passed as args
+   conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
+   // where placeholders is []string{"?", "?", "?"}
+   ```
+
+**Review approach:**
+1. Find all `db.Exec`, `db.Query`, `db.QueryRow`, `db.QueryContext`, `db.ExecContext` calls
+2. Trace back the query string — is it built with string concatenation or Sprintf using external values?
+3. Verify all user-supplied values go through `?` placeholders
+4. Check that `fmt.Sprintf` in queries is only used for structural elements (column names, table names, WHERE clause assembly) — never for values
+
+## clarity-reviewer
+
+Review markdown documentation for terseness. Every token costs money and attention — cut the fat.
+
+**What to check:**
+
+1. Look at the PR diff for changes to `.md` files
+2. **Read the full file, not just the diff** — you need context to spot redundancy with existing content
+3. Examine new or modified text for:
+   - Redundant phrasing ("in order to" → "to")
+   - Filler words ("actually", "basically", "simply", "really")
+   - Stating the obvious or repeating context already established
+   - Overly long explanations where a short one suffices
+
+**Common patterns to flag:**
+
+| Verbose | Terse |
+|---------|-------|
+| "in order to" | "to" |
+| "for the purpose of" | "to" / "for" |
+| "in the event that" | "if" |
+| "at this point in time" | "now" |
+| "due to the fact that" | "because" |
+| "it is important to note that" | (delete, just state the thing) |
+| "as mentioned above/previously" | (delete or use a link) |
+| "This section describes how to..." | (delete, describe it directly) |
+
+**Flag issues if:**
+- A sentence can be cut in half without losing meaning
+- The same information is stated twice in different words
+- Explanatory text explains something already obvious from context
+- New text restates something already covered in unchanged parts of the file
+
+**Do NOT flag:**
+- Necessary detail that aids understanding
+- Examples and code blocks (these should be complete)
+- Repetition that serves as a deliberate reminder (e.g., "NEVER use git push" repeated for emphasis)
+- Technical precision that requires specific wording
+
+**When flagging, provide:**
+- The verbose text
+- A terse replacement
+- Brief reason (optional, only if not obvious)
