@@ -10,6 +10,13 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+// ObjectFetcher is the subset of Client used by handlers to fetch JSON objects.
+// The real *Client satisfies this; tests can provide a mock.
+type ObjectFetcher interface {
+	GetObject(ctx context.Context, key string) (io.ReadCloser, error)
+	GetObjectBytes(ctx context.Context, key string) ([]byte, error)
+}
+
 // Client wraps the AWS S3 client with bucket-scoped helpers.
 type Client struct {
 	inner  *awss3.Client

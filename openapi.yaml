@@ -114,6 +114,55 @@ paths:
                 items:
                   $ref: "#/components/schemas/Suggestion"
 
+  /search/suggest/unified:
+    get:
+      operationId: suggestUnified
+      summary: Edition-aware typeahead with cross-edition alternates
+      description: |
+        Like `/search/suggest` but edition-aware. Each result includes the
+        entry's edition and, when available, its cross-edition alternate
+        (e.g. Orc Brute ↔ Orc Scrapper). When both editions match the query,
+        they are deduplicated into a single result — whichever name matched
+        is the primary, and the counterpart rides along as `alternate`.
+
+        No minimum character requirement. 1-2 character queries use direct
+        LIKE matching; 3+ characters use the trigram index.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search string (any length)
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Content type filter. Repeat for multiple types.
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: version
+          in: query
+          description: Only include entries that have this schema version available
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 15
+            maximum: 15
+      responses:
+        "200":
+          description: Suggestion list (may be empty)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UnifiedSuggestion"
+
   /types:
     get:
       operationId: listTypes
@@ -240,6 +289,89 @@ paths:
                   status:
                     type: string
                     example: refreshed
+
+  /templates/{monsterGameID}/apply/{templateGameID}:
+    get:
+      operationId: applyTemplateByID
+      summary: Apply a monster template to a creature by game IDs
+      description: |
+        Looks up both entries in the DB, fetches their JSON from S3, applies
+        the template, and returns a multipart/mixed response with two parts:
+        1. The patch document (grouped RFC 6902 operations)
+        2. The modified creature JSON
+
+        **Edition auto-resolution:** If the creature and template have different
+        editions (legacy vs remastered), the API automatically looks up the
+        alternate template for the creature's edition via the `alternates` table.
+        For example, requesting the remastered Elite (MonsterTemplates:22) for a
+        legacy creature will automatically use the legacy Elite (MonsterTemplates:1).
+
+        To chain templates, read the creature part from the response and submit
+        it as `creature` in a POST to `/templates/apply` with the next template.
+      parameters:
+        - name: monsterGameID
+          in: path
+          required: true
+          description: "Game ID of the creature (e.g. Monsters:100)"
+          schema:
+            type: string
+        - name: templateGameID
+          in: path
+          required: true
+          description: "Game ID of the template (e.g. MonsterTemplates:22)"
+          schema:
+            type: string
+        - name: monster_version
+          in: query
+          description: Schema version for the creature JSON (defaults to current)
+          schema:
+            type: string
+        - name: template_version
+          in: query
+          description: Schema version for the template JSON (defaults to current)
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/TemplateApplyResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /templates/apply:
+    post:
+      operationId: applyTemplateInline
+      summary: Apply a template to an inline creature
+      description: |
+        Accepts a creature JSON body and either an inline template or a
+        `template_game_id` to look up from S3. Returns a multipart/mixed
+        response with the patch document and modified creature as separate parts.
+
+        When using `template_game_id`, edition auto-resolution applies: if the
+        creature's `edition` field differs from the template's edition, the API
+        looks up the same-edition alternate automatically.
+
+        Supports chaining: submit the creature part from a previous response
+        as `creature` with a new template.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemplateApplyRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/TemplateApplyResult"
+        "400":
+          description: Invalid request (missing creature or template)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /{type}:
     get:
@@ -421,6 +553,30 @@ components:
           type: string
           nullable: true
 
+    UnifiedSuggestion:
+      type: object
+      required: [game_id, name, type]
+      description: |
+        Edition-aware typeahead result. The `alternate` field is only present
+        when the entry has a cross-edition counterpart.
+      properties:
+        game_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        level:
+          type: integer
+        edition:
+          type: string
+          enum: [legacy, remastered]
+        image_s3_key:
+          type: string
+        alternate:
+          description: Cross-edition counterpart (omitted when none exists)
+          $ref: "#/components/schemas/UnifiedSuggestion"
+
     DBStatus:
       type: object
       required: [local_etag, s3_etag, up_to_date, last_checked, last_refreshed]
@@ -436,7 +592,178 @@ components:
         last_refreshed:
           type: string
 
+    TemplateApplyRequest:
+      type: object
+      required: [creature]
+      properties:
+        creature:
+          description: Full creature JSON (must include stat_block)
+          type: object
+        template_game_id:
+          description: "Game ID to look up template from S3 (e.g. MonsterTemplates:22)"
+          type: string
+        template_version:
+          description: Schema version for the template (defaults to current)
+          type: string
+        template:
+          description: Inline template JSON (used instead of template_game_id)
+          $ref: "#/components/schemas/MonsterTemplate"
+
+    MonsterTemplate:
+      type: object
+      required: [name, monster_template]
+      properties:
+        name:
+          type: string
+          example: Elite
+        monster_template:
+          type: object
+          required: [name, changes]
+          properties:
+            name:
+              type: string
+            changes:
+              type: array
+              items:
+                $ref: "#/components/schemas/TemplateChange"
+
+    TemplateChange:
+      type: object
+      required: [text, change_category, effects]
+      properties:
+        text:
+          description: Human-readable description of the change
+          type: string
+        change_category:
+          description: Category grouping for this change
+          type: string
+          enum:
+            - level
+            - combat_stats
+            - damage
+            - hit_points
+            - abilities
+            - attributes
+            - gear
+            - immunities
+            - languages
+            - resistances
+            - senses
+            - size
+            - skills
+            - speed
+            - spells
+            - strikes
+            - traits
+            - weaknesses
+            - unknown
+        effects:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateEffect"
+
+    TemplateEffect:
+      type: object
+      required: [target, operation]
+      properties:
+        conditional:
+          description: |
+            When to apply this effect. Supports: "default", path comparisons
+            (e.g. "$.creature_type.level <= 0"), && conjunctions, and null
+            checks. Effects sharing a target form a first-match chain.
+          type: string
+          example: "$.creature_type.level <= 0"
+        target:
+          description: "JSONPath within stat_block (e.g. $.defense.ac.value). Supports [*] wildcards."
+          type: string
+          example: "$.defense.ac.value"
+        operation:
+          type: string
+          enum: [adjustment, add_modifier]
+        value:
+          description: Numeric adjustment value (for operation=adjustment)
+        modifier:
+          description: Modifier object to append (for operation=add_modifier)
+          type: object
+
+    PatchDocument:
+      description: Grouped RFC 6902 patches produced by applying a template
+      type: object
+      required: [applied_patches, selections]
+      properties:
+        applied_patches:
+          type: array
+          items:
+            $ref: "#/components/schemas/PatchGroup"
+        selections:
+          description: Placeholder for future template selections (always empty for Elite/Weak)
+          type: array
+          items: {}
+
+    PatchGroup:
+      type: object
+      required: [change_category, description, operations]
+      properties:
+        change_category:
+          type: string
+          example: combat_stats
+        description:
+          type: string
+          example: "Increase the creature's AC, attack modifiers, DCs, saving throws, Perception, and skill modifiers by 2."
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/PatchOperation"
+
+    PatchOperation:
+      description: A single RFC 6902 JSON Patch operation
+      type: object
+      required: [op, path]
+      properties:
+        op:
+          type: string
+          enum: [add, remove, replace, move, copy, test]
+        path:
+          description: "JSON Pointer (RFC 6901) into the creature document"
+          type: string
+          example: "/stat_block/defense/ac/value"
+        value:
+          description: New value (present for add/replace)
+
   responses:
+    TemplateApplyResult:
+      description: |
+        Multipart response with two JSON parts:
+        - **patches** — the patch document with grouped RFC 6902 operations
+        - **creature** — the full modified creature JSON
+      content:
+        multipart/mixed:
+          schema:
+            type: object
+          encoding:
+            patches:
+              contentType: application/json
+            creature:
+              contentType: application/json
+          example:
+            description: |
+              Part 1 (Content-Disposition: inline; name="patches"):
+              {
+                "applied_patches": [
+                  {
+                    "change_category": "level",
+                    "description": "Increase the creature's level by 1...",
+                    "operations": [
+                      {"op": "replace", "path": "/stat_block/creature_type/level", "value": 15}
+                    ]
+                  }
+                ],
+                "selections": []
+              }
+
+              Part 2 (Content-Disposition: inline; name="creature"):
+              { "name": "Adult Red Dragon", "stat_block": { ... } }
+
     NotFound:
       description: Resource not found
       content:
