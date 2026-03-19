@@ -214,8 +214,10 @@ func applyAddModifier(rv ResolvedValue, eff Effect) error {
 
 	// Convert modifier map to any for JSON compatibility
 	modifier := make(map[string]any)
-	for k, v := range eff.Modifier {
-		modifier[k] = v
+	if eff.Modifier != nil {
+		for k, v := range eff.Modifier {
+			modifier[k] = v
+		}
 	}
 
 	arr = append(arr, modifier)
