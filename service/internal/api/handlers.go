@@ -606,6 +606,7 @@ func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 		return
 	}
 	if err := json.NewEncoder(part).Encode(resp.PatchDoc); err != nil {
+		slog.Error("failed to encode patches part", "err", err)
 		return
 	}
 
@@ -615,9 +616,11 @@ func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 		"Content-Disposition": {"inline; name=\"creature\""},
 	})
 	if err != nil {
+		slog.Error("failed to create creature part", "err", err)
 		return
 	}
 	if err := json.NewEncoder(part).Encode(resp.Creature); err != nil {
+		slog.Error("failed to encode creature part", "err", err)
 		return
 	}
 

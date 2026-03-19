@@ -3,6 +3,7 @@ package template
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/wI2L/jsondiff"
 )
@@ -223,15 +224,5 @@ func applyAddModifier(rv ResolvedValue, eff Effect) error {
 }
 
 func containsWildcard(path string) bool {
-	return len(path) > 0 && (path[0] == '$' || true) && // always check
-		len(path) > 2 && containsStr(path, "[*]")
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(path, "[*]")
 }
