@@ -568,11 +568,14 @@ components:
           type: string
         level:
           type: integer
+          nullable: true
         edition:
           type: string
           enum: [legacy, remastered]
+          nullable: true
         image_s3_key:
           type: string
+          nullable: true
         alternate:
           description: Cross-edition counterpart (omitted when none exists)
           $ref: "#/components/schemas/UnifiedSuggestion"

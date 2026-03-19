@@ -38,3 +38,28 @@ This is NOT optional. PRs without tests for new/modified code should be blocked.
 
 **Acceptable:**
 - Creating a beads ticket to track adding tests, as long as the ticket is created before merging
+
+## openapi-spec-reviewer
+
+Review code changes to **ensure the OpenAPI spec (`openapi.yaml`) stays in sync with the actual API**.
+
+**Core rule: Any PR that adds, removes, or modifies API endpoints must update `openapi.yaml` to match.**
+
+**Rules to enforce:**
+
+1. **New endpoints must be documented**: If a handler is added or a new route registered, the corresponding path must appear in `openapi.yaml` with correct method, parameters, request body, and response schema.
+
+2. **Modified endpoints must be updated**: If a handler's behavior changes (new query params, different response shape, changed status codes), the spec must reflect the change.
+
+3. **Response schemas must be accurate**: The `components/schemas` section must define types that match the actual Go structs returned by handlers. Check that field names, types, and `omitempty`/required status match.
+
+4. **Removed endpoints must be removed from spec**: Dead paths in the spec are misleading.
+
+5. **`$ref` links must resolve**: All `$ref` references in the spec must point to schemas/responses that actually exist in `components`.
+
+**Review approach:**
+1. Identify all handler changes in the PR (new routes, modified handlers, changed response types)
+2. Cross-reference against `openapi.yaml` — is every change reflected?
+3. Check that Go struct field names and JSON tags match the schema property names
+4. Verify request/response examples are plausible
+5. Flag any drift between code and spec
