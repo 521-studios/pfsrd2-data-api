@@ -2,11 +2,15 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,11 +21,12 @@ import (
 	"github.com/521studios/pfsrd2-data-api/internal/db"
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 	"github.com/521studios/pfsrd2-data-api/internal/startup"
+	"github.com/521studios/pfsrd2-data-api/internal/template"
 )
 
 // Config holds handler dependencies injected at startup.
 type Config struct {
-	S3Client    *s3.Client
+	S3Client    s3.ObjectFetcher
 	ImageDomain string // app domain for image redirects, e.g. "lets-roll.org"
 	StartupCfg  startup.Config
 }
@@ -78,6 +83,7 @@ func NewRouter(cfg Config) *chi.Mux {
 	r.Route("/api/pfsrd2", func(r chi.Router) {
 		r.Get("/search", h.search)
 		r.Get("/search/suggest", h.suggest)
+		r.Get("/search/suggest/unified", h.suggestUnified)
 		r.Get("/types", h.types)
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
@@ -85,6 +91,10 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
+
+		// Template application
+		r.Get("/templates/{monsterGameID}/apply/{templateGameID}", h.applyTemplateByID)
+		r.Post("/templates/apply", h.applyTemplateInline)
 
 		// /{type} — paginated list
 		// /{type}/{schema_version}/{book}/{filename} — full JSON from S3
@@ -139,6 +149,30 @@ func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 		Limit:   queryInt(r, "limit", 15),
 	}
 	results, err := db.Suggest(r.Context(), db.Global(), p)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, results)
+}
+
+// ---------------------------------------------------------------------------
+// GET /search/suggest/unified
+// ---------------------------------------------------------------------------
+
+func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if len(q) == 0 {
+		jsonOK(w, []db.UnifiedSuggestion{})
+		return
+	}
+	p := db.UnifiedSuggestParams{
+		Q:       q,
+		Types:   r.URL.Query()["type"],
+		Version: r.URL.Query().Get("version"),
+		Limit:   queryInt(r, "limit", 15),
+	}
+	results, err := db.SuggestUnified(r.Context(), db.Global(), p)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -339,6 +373,258 @@ func (h *handler) dbRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]string{"status": "refreshed"})
+}
+
+// ---------------------------------------------------------------------------
+// GET /templates/{monsterGameID}/apply/{templateGameID}
+// ---------------------------------------------------------------------------
+
+func (h *handler) applyTemplateByID(w http.ResponseWriter, r *http.Request) {
+	monsterGameID := chi.URLParam(r, "monsterGameID")
+	templateGameID := chi.URLParam(r, "templateGameID")
+
+	d := db.Global()
+
+	// Look up monster entry
+	monsterEntry, err := db.GetByGameID(r.Context(), d, monsterGameID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if monsterEntry == nil {
+		jsonError(w, "monster not found", http.StatusNotFound)
+		return
+	}
+
+	// Look up template entry, preferring the creature's edition
+	tmplEntry, err := resolveTemplateEntry(r.Context(), d, templateGameID, monsterEntry.Edition)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if tmplEntry == nil {
+		jsonError(w, "template not found", http.StatusNotFound)
+		return
+	}
+
+	// Resolve S3 keys, honouring optional version query params
+	monsterS3Key := resolveS3Key(r, monsterGameID, monsterEntry.S3Key, "monster_version")
+	tmplS3Key := resolveS3Key(r, tmplEntry.GameID, tmplEntry.S3Key, "template_version")
+
+	// Fetch JSON from S3
+	creatureBytes, err := h.cfg.S3Client.GetObjectBytes(r.Context(), monsterS3Key)
+	if err != nil {
+		if isNotFound(err) {
+			jsonError(w, "monster JSON not found in S3", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmplBytes, err := h.cfg.S3Client.GetObjectBytes(r.Context(), tmplS3Key)
+	if err != nil {
+		if isNotFound(err) {
+			jsonError(w, "template JSON not found in S3", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var creature map[string]any
+	if err := json.Unmarshal(creatureBytes, &creature); err != nil {
+		jsonError(w, "invalid creature JSON", http.StatusInternalServerError)
+		return
+	}
+	var tmpl template.TemplateJSON
+	if err := json.Unmarshal(tmplBytes, &tmpl); err != nil {
+		jsonError(w, "invalid template JSON", http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := template.Apply(creature, tmpl)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeTemplateResult(w, resp)
+}
+
+// ---------------------------------------------------------------------------
+// POST /templates/apply
+// ---------------------------------------------------------------------------
+
+func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Creature       map[string]any         `json:"creature"`
+		TemplateGameID string                 `json:"template_game_id,omitempty"`
+		TemplateVer    string                 `json:"template_version,omitempty"`
+		Template       *template.TemplateJSON `json:"template,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if body.Creature == nil {
+		jsonError(w, "creature is required", http.StatusBadRequest)
+		return
+	}
+
+	var tmpl template.TemplateJSON
+
+	if body.Template != nil {
+		tmpl = *body.Template
+	} else if body.TemplateGameID != "" {
+		// Look up template from DB + S3, preferring the creature's edition
+		d := db.Global()
+		creatureEdition := creatureEditionFromJSON(body.Creature)
+		tmplEntry, err := resolveTemplateEntry(r.Context(), d, body.TemplateGameID, creatureEdition)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if tmplEntry == nil {
+			jsonError(w, "template not found", http.StatusNotFound)
+			return
+		}
+
+		s3Key := tmplEntry.S3Key
+		if body.TemplateVer != "" {
+			versions, _ := db.GetVersions(r.Context(), d, tmplEntry.GameID)
+			for _, v := range versions {
+				if v.SchemaVersion == body.TemplateVer {
+					s3Key = v.S3Key
+					break
+				}
+			}
+		}
+
+		tmplBytes, err := h.cfg.S3Client.GetObjectBytes(r.Context(), s3Key)
+		if err != nil {
+			if isNotFound(err) {
+				jsonError(w, "template JSON not found in S3", http.StatusNotFound)
+				return
+			}
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(tmplBytes, &tmpl); err != nil {
+			jsonError(w, "invalid template JSON", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		jsonError(w, "template or template_game_id is required", http.StatusBadRequest)
+		return
+	}
+
+	resp, err := template.Apply(body.Creature, tmpl)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeTemplateResult(w, resp)
+}
+
+// resolveTemplateEntry looks up a template by game_id, and if the creature has
+// a different edition, tries to find the same-edition alternate via the
+// alternates table. Returns the best-match template entry.
+func resolveTemplateEntry(ctx context.Context, d *sql.DB, templateGameID string, creatureEdition *string) (*db.Entry, error) {
+	tmplEntry, err := db.GetByGameID(ctx, d, templateGameID)
+	if err != nil {
+		return nil, err
+	}
+	if tmplEntry == nil {
+		return nil, nil
+	}
+
+	// If creature has an edition and the template is a different edition,
+	// try to find the alternate template for the creature's edition.
+	if creatureEdition != nil && tmplEntry.Edition != nil &&
+		*creatureEdition != *tmplEntry.Edition {
+		altGameID, err := db.GetAlternateGameID(ctx, d, templateGameID, *creatureEdition)
+		if err != nil {
+			return nil, err
+		}
+		if altGameID != "" {
+			altEntry, err := db.GetByGameID(ctx, d, altGameID)
+			if err != nil {
+				return nil, err
+			}
+			if altEntry != nil {
+				return altEntry, nil
+			}
+		}
+	}
+
+	return tmplEntry, nil
+}
+
+// creatureEditionFromJSON reads the "edition" field from an inline creature JSON.
+func creatureEditionFromJSON(creature map[string]any) *string {
+	if ed, ok := creature["edition"].(string); ok {
+		return &ed
+	}
+	return nil
+}
+
+// resolveS3Key checks for a version query param and returns the appropriate S3 key.
+func resolveS3Key(r *http.Request, gameID, defaultKey, queryParam string) string {
+	wantVersion := r.URL.Query().Get(queryParam)
+	if wantVersion == "" {
+		return defaultKey
+	}
+	versions, _ := db.GetVersions(r.Context(), db.Global(), gameID)
+	for _, v := range versions {
+		if v.SchemaVersion == wantVersion {
+			return v.S3Key
+		}
+	}
+	return defaultKey
+}
+
+// ---------------------------------------------------------------------------
+// Multipart template response
+// ---------------------------------------------------------------------------
+
+// writeTemplateResult writes an ApplyResult as a multipart/mixed response with
+// two JSON parts: the patch document and the modified creature.
+func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
+	mw := multipart.NewWriter(w)
+	w.Header().Set("Content-Type", "multipart/mixed; boundary="+mw.Boundary())
+
+	jsonHeader := textproto.MIMEHeader{
+		"Content-Type": {"application/json"},
+	}
+
+	// Part 1: patch document
+	part, err := mw.CreatePart(textproto.MIMEHeader{
+		"Content-Type":        {"application/json"},
+		"Content-Disposition": {"inline; name=\"patches\""},
+	})
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := json.NewEncoder(part).Encode(resp.PatchDoc); err != nil {
+		slog.Error("failed to encode patches part", "err", err)
+		return
+	}
+
+	// Part 2: modified creature
+	part, err = mw.CreatePart(textproto.MIMEHeader{
+		"Content-Type":        jsonHeader["Content-Type"],
+		"Content-Disposition": {"inline; name=\"creature\""},
+	})
+	if err != nil {
+		slog.Error("failed to create creature part", "err", err)
+		return
+	}
+	if err := json.NewEncoder(part).Encode(resp.Creature); err != nil {
+		slog.Error("failed to encode creature part", "err", err)
+		return
+	}
+
+	mw.Close()
 }
 
 // ---------------------------------------------------------------------------

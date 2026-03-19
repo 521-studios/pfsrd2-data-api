@@ -59,6 +59,10 @@ func testDB(t *testing.T) *sql.DB {
 			name, content=entries, content_rowid=id,
 			tokenize='trigram'
 		);
+		CREATE TABLE alternates (
+			game_id TEXT NOT NULL, alternate_game_id TEXT NOT NULL,
+			alternate_type TEXT NOT NULL, PRIMARY KEY (game_id, alternate_game_id)
+		);
 	`
 	if _, err := db.Exec(ddl); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -86,6 +90,9 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		{"Monsters:401", "monsters", "Orc Warchief", "1.3", "monsters/bestiary/orc_warchief.json", "json/monsters/1.3/bestiary/orc_warchief.json", 2, "Bestiary", "remastered", nil},
 		{"Monsters:402", "monsters", "Giant Porcupine", "1.3", "monsters/bestiary/giant_porcupine.json", "json/monsters/1.3/bestiary/giant_porcupine.json", 2, "Bestiary", "remastered", nil},
 		{"Monsters:403", "monsters", "Orc Warrior", "1.3", "monsters/bestiary/orc_warrior.json", "json/monsters/1.3/bestiary/orc_warrior.json", 1, "Bestiary", "remastered", nil},
+		{"Monsters:404", "monsters", "Orc Scrapper", "1.3", "monsters/monster_core/orc_scrapper.json", "json/monsters/1.3/monster_core/orc_scrapper.json", 1, "Monster Core", "remastered", nil},
+		{"Monsters:405", "monsters", "Kobold Warrior", "1.3", "monsters/bestiary/kobold_warrior.json", "json/monsters/1.3/bestiary/kobold_warrior.json", -1, "Bestiary", "legacy", nil},
+		{"Monsters:406", "monsters", "Kobold Warrior", "1.3", "monsters/monster_core/kobold_warrior.json", "json/monsters/1.3/monster_core/kobold_warrior.json", 0, "Monster Core", "remastered", nil},
 	}
 
 	for _, e := range entries {
@@ -119,6 +126,21 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 			v.gameID, v.schema, v.s3Key)
 		if err != nil {
 			t.Fatalf("insert version %s/%s: %v", v.gameID, v.schema, err)
+		}
+	}
+
+	// Alternates: Orc Brute (legacy) ↔ Orc Scrapper (remastered), Kobold Warrior ↔ Kobold Warrior
+	alternates := []struct{ gameID, altGameID, altType string }{
+		{"Monsters:400", "Monsters:404", "remastered"},
+		{"Monsters:404", "Monsters:400", "legacy"},
+		{"Monsters:405", "Monsters:406", "remastered"},
+		{"Monsters:406", "Monsters:405", "legacy"},
+	}
+	for _, a := range alternates {
+		_, err := db.Exec(`INSERT INTO alternates(game_id, alternate_game_id, alternate_type) VALUES(?, ?, ?)`,
+			a.gameID, a.altGameID, a.altType)
+		if err != nil {
+			t.Fatalf("insert alternate %s→%s: %v", a.gameID, a.altGameID, err)
 		}
 	}
 
@@ -290,8 +312,8 @@ func TestSuggest_WordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 4 {
-		t.Errorf("expected 4 results for 'orc' substring, got %d", len(results))
+	if len(results) != 5 {
+		t.Errorf("expected 5 results for 'orc' substring, got %d", len(results))
 		for _, r := range results {
 			t.Logf("  %s", r.Name)
 		}
@@ -305,8 +327,8 @@ func TestSuggest_WordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 3 {
-		t.Errorf("expected 3 results for 'orc ' word-boundary, got %d", len(results))
+	if len(results) != 4 {
+		t.Errorf("expected 4 results for 'orc ' word-boundary, got %d", len(results))
 		for _, r := range results {
 			t.Logf("  %s", r.Name)
 		}
@@ -385,5 +407,181 @@ func TestGetByGameID_NotFound(t *testing.T) {
 	}
 	if entry != nil {
 		t.Errorf("expected nil entry, got %+v", entry)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetAlternateGameID tests
+// ---------------------------------------------------------------------------
+
+func TestGetAlternateGameID_Found(t *testing.T) {
+	db := testDB(t)
+	// Orc Brute (400, legacy) → alternate remastered is Orc Scrapper (404)
+	altID, err := GetAlternateGameID(context.Background(), db, "Monsters:400", "remastered")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if altID != "Monsters:404" {
+		t.Errorf("expected Monsters:404, got %q", altID)
+	}
+}
+
+func TestGetAlternateGameID_NotFound(t *testing.T) {
+	db := testDB(t)
+	// Adult Red Dragon has no alternates
+	altID, err := GetAlternateGameID(context.Background(), db, "Monsters:100", "legacy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if altID != "" {
+		t.Errorf("expected empty string, got %q", altID)
+	}
+}
+
+func TestGetAlternateGameID_WrongEdition(t *testing.T) {
+	db := testDB(t)
+	// Orc Brute (400) has a remastered alternate but not a legacy one
+	altID, err := GetAlternateGameID(context.Background(), db, "Monsters:400", "legacy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if altID != "" {
+		t.Errorf("expected empty string for wrong edition, got %q", altID)
+	}
+}
+
+func TestGetAlternateGameID_NonexistentEntry(t *testing.T) {
+	db := testDB(t)
+	altID, err := GetAlternateGameID(context.Background(), db, "Monsters:99999", "remastered")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if altID != "" {
+		t.Errorf("expected empty string for nonexistent entry, got %q", altID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SuggestUnified tests
+// ---------------------------------------------------------------------------
+
+func TestSuggestUnified_WithAlternate(t *testing.T) {
+	db := testDB(t)
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "orc brute"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "Orc Brute" {
+		t.Errorf("expected 'Orc Brute', got %q", results[0].Name)
+	}
+	if results[0].Alternate == nil {
+		t.Fatal("expected alternate")
+	}
+	if results[0].Alternate.Name != "Orc Scrapper" {
+		t.Errorf("expected alternate 'Orc Scrapper', got %q", results[0].Alternate.Name)
+	}
+}
+
+func TestSuggestUnified_SameNameRemasteredWins(t *testing.T) {
+	db := testDB(t)
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "kobold warrior"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	kobolds := 0
+	for _, s := range results {
+		if s.Name == "Kobold Warrior" {
+			kobolds++
+			if s.Edition == nil || *s.Edition != "remastered" {
+				t.Errorf("expected remastered primary, got %v", s.Edition)
+			}
+			if s.Alternate == nil {
+				t.Fatal("expected legacy alternate")
+			}
+			if s.Alternate.Edition == nil || *s.Alternate.Edition != "legacy" {
+				t.Errorf("expected legacy alternate, got %v", s.Alternate.Edition)
+			}
+		}
+	}
+	if kobolds != 1 {
+		t.Errorf("expected 1 Kobold Warrior, got %d", kobolds)
+	}
+}
+
+func TestSuggestUnified_ShortQuery(t *testing.T) {
+	db := testDB(t)
+	// 2-char query should work via LIKE
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "or"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results for 2-char query 'or'")
+	}
+}
+
+func TestSuggestUnified_TypeFilter(t *testing.T) {
+	db := testDB(t)
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{
+		Q:     "dragon",
+		Types: []string{"spells"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range results {
+		if s.Type != "spells" {
+			t.Errorf("expected type=spells, got %q for %q", s.Type, s.Name)
+		}
+	}
+}
+
+func TestSuggestUnified_VersionFilter(t *testing.T) {
+	db := testDB(t)
+	// Young Blue Dragon (Monsters:102) has no 1.2 version
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{
+		Q:       "dragon",
+		Version: "1.2",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range results {
+		if s.GameID == "Monsters:102" {
+			t.Error("Young Blue Dragon should be excluded (no 1.2 version)")
+		}
+	}
+}
+
+func TestSuggestUnified_LimitClamping(t *testing.T) {
+	db := testDB(t)
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "orc", Limit: 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) > 15 {
+		t.Errorf("limit=0 should clamp to 15, got %d results", len(results))
+	}
+
+	results, err = SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "orc", Limit: 100})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) > 15 {
+		t.Errorf("limit=100 should clamp to 15, got %d results", len(results))
+	}
+}
+
+func TestSuggestUnified_EmptyQuery(t *testing.T) {
+	db := testDB(t)
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results, got %d", len(results))
 	}
 }

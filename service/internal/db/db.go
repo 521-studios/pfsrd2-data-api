@@ -292,6 +292,24 @@ func GetVersions(ctx context.Context, db *sql.DB, gameID string) ([]EntryVersion
 	return versions, rows.Err()
 }
 
+// GetAlternateGameID looks up the alternate edition of an entry. For example,
+// given a remastered template's game_id and edition "legacy", it returns the
+// legacy version's game_id (if one exists).
+func GetAlternateGameID(ctx context.Context, db *sql.DB, gameID, wantEdition string) (string, error) {
+	var altGameID string
+	err := db.QueryRowContext(ctx, `
+		SELECT alternate_game_id FROM alternates
+		WHERE game_id = ? AND alternate_type = ?
+	`, gameID, wantEdition).Scan(&altGameID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get alternate: %w", err)
+	}
+	return altGameID, nil
+}
+
 // ---------------------------------------------------------------------------
 // Types / Sources
 // ---------------------------------------------------------------------------
@@ -511,6 +529,217 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 		results = append(results, s)
 	}
 	return results, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Unified Suggest (edition-aware typeahead)
+// ---------------------------------------------------------------------------
+
+// UnifiedSuggestion is a typeahead result that includes the entry's edition
+// and optionally its cross-edition alternate.
+type UnifiedSuggestion struct {
+	GameID     string             `json:"game_id"`
+	Name       string             `json:"name"`
+	Type       string             `json:"type"`
+	Level      *int               `json:"level,omitempty"`
+	Edition    *string            `json:"edition,omitempty"`
+	ImageS3Key *string            `json:"image_s3_key,omitempty"`
+	Alternate  *UnifiedSuggestion `json:"alternate,omitempty"`
+}
+
+// UnifiedSuggestParams for GET /search/suggest/unified.
+type UnifiedSuggestParams struct {
+	Q       string
+	Types   []string
+	Version string
+	Limit   int
+}
+
+// SuggestUnified runs a typeahead search that joins alternates to produce
+// edition-aware results. No minimum character requirement — 1-2 char queries
+// use direct LIKE matching, 3+ use the trigram index.
+func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]UnifiedSuggestion, error) {
+	if p.Limit <= 0 || p.Limit > 15 {
+		p.Limit = 15
+	}
+
+	trimmed := strings.TrimRight(p.Q, " ")
+	hasTrailingSpace := len(p.Q) > len(trimmed)
+	words := strings.Fields(trimmed)
+
+	if len(words) == 0 {
+		return []UnifiedSuggestion{}, nil
+	}
+
+	args := []any{}
+	conds := []string{}
+
+	// Check if any word qualifies for trigram matching
+	hasTrigram := false
+	for _, w := range words {
+		if len(w) >= 3 {
+			hasTrigram = true
+			break
+		}
+	}
+
+	if !hasTrigram {
+		// Short query: LIKE substring match for 1-2 char queries
+		conds = append(conds, "LOWER(e.name) LIKE ?")
+		args = append(args, "%"+strings.ToLower(trimmed)+"%")
+	} else {
+		for i, word := range words {
+			isComplete := i < len(words)-1 || hasTrailingSpace
+
+			if len(word) >= 3 {
+				conds = append(conds,
+					"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)")
+				args = append(args, word)
+			}
+
+			if isComplete {
+				lowerWord := strings.ToLower(word)
+				conds = append(conds,
+					"(LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) = ?)")
+				args = append(args, lowerWord+" %", "% "+lowerWord+" %", "% "+lowerWord, lowerWord)
+			} else if len(word) < 3 {
+				conds = append(conds, "LOWER(e.name) LIKE ?")
+				args = append(args, "%"+strings.ToLower(word)+"%")
+			}
+		}
+	}
+
+	if len(p.Types) > 0 {
+		placeholders := make([]string, len(p.Types))
+		for i, t := range p.Types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if p.Version != "" {
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
+		args = append(args, p.Version)
+	}
+
+	where := strings.Join(conds, " AND ")
+
+	// Fetch primary matches with their alternates in one query.
+	// We over-fetch (2x limit) to account for dedup when both editions match.
+	query := fmt.Sprintf(`
+		SELECT e.game_id, e.name, e.type, e.level, e.edition, e.image_s3_key,
+		       a2.game_id, a2.name, a2.type, a2.level, a2.edition, a2.image_s3_key
+		FROM entries e
+		LEFT JOIN alternates alt ON alt.game_id = e.game_id
+		LEFT JOIN entries a2 ON a2.game_id = alt.alternate_game_id
+		WHERE %s
+		ORDER BY CASE WHEN LOWER(e.name) LIKE ? THEN 0 ELSE 1 END, e.name ASC
+		LIMIT ?
+	`, where)
+	args = append(args, strings.ToLower(trimmed)+"%", p.Limit*2)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("suggest unified: %w", err)
+	}
+	defer rows.Close()
+
+	// Collect all rows, then dedup alternate pairs.
+	type rawRow struct {
+		primary   UnifiedSuggestion
+		alternate *UnifiedSuggestion
+	}
+	var rawRows []rawRow
+
+	for rows.Next() {
+		var s UnifiedSuggestion
+		var altGameID, altName, altType, altEdition, altImage *string
+		var altLevel *int
+
+		if err := rows.Scan(
+			&s.GameID, &s.Name, &s.Type, &s.Level, &s.Edition, &s.ImageS3Key,
+			&altGameID, &altName, &altType, &altLevel, &altEdition, &altImage,
+		); err != nil {
+			return nil, fmt.Errorf("scan unified suggestion: %w", err)
+		}
+
+		r := rawRow{primary: s}
+		if altGameID != nil {
+			r.alternate = &UnifiedSuggestion{
+				GameID:     *altGameID,
+				Name:       deref(altName),
+				Type:       deref(altType),
+				Level:      altLevel,
+				Edition:    altEdition,
+				ImageS3Key: altImage,
+			}
+		}
+		rawRows = append(rawRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Build set of game_ids that matched the query directly (appeared as primary).
+	matched := map[string]bool{}
+	for _, r := range rawRows {
+		matched[r.primary.GameID] = true
+	}
+
+	// Dedup: when both editions of a pair matched the query, merge into one result.
+	// - Same name: remastered is primary, legacy is alternate
+	// - Different names: lexical order (earlier name is primary)
+	// When only one edition matched, it stays primary — the counterpart rides along.
+	seen := map[string]bool{}
+	results := make([]UnifiedSuggestion, 0, p.Limit)
+
+	for _, r := range rawRows {
+		if seen[r.primary.GameID] {
+			continue
+		}
+
+		s := r.primary
+		alt := r.alternate
+
+		if alt != nil && seen[alt.GameID] {
+			continue
+		}
+
+		if alt != nil {
+			// Only reorder when both editions matched the query
+			bothMatched := matched[s.GameID] && matched[alt.GameID]
+			if bothMatched {
+				if s.Name == alt.Name {
+					// Same name: remastered wins primary
+					if s.Edition != nil && *s.Edition == "legacy" {
+						s, *alt = *alt, s
+					}
+				} else if s.Name > alt.Name {
+					// Different names: lexical order
+					s, *alt = *alt, s
+				}
+			}
+			s.Alternate = alt
+			seen[alt.GameID] = true
+		}
+
+		seen[s.GameID] = true
+		results = append(results, s)
+		if len(results) >= p.Limit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ---------------------------------------------------------------------------

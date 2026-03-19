@@ -34,10 +34,20 @@ Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` 
 | `s3_bucket_arn` | Data bucket ARN |
 | `indexer_iam_policy_arn` | IAM policy for pfsrd2-parser to write to S3 |
 
+## Game IDs
+
+The `game_id` is the primary key used throughout this API for looking up entries. It is an MD5 hash of `"{source_name}: {page}: {name}"` — derived from the source book name, page number, and entry name. This makes it a **content-addressable identifier** tied to the published game content itself, not to any particular data source or database.
+
+Because the hash inputs are the published citation (book + page + name), any parser that processes the same source material will produce the same game_id. This allows data from different sources (AoN HTML scraping, direct PDF parsing, etc.) to be compared and reconciled by game_id.
+
+The `game_id` field is stored in the `entries` table and is used by `db.GetByGameID()`. All API lookups use game_id, not aonid (which is Archives of Nethys-specific).
+
 ## Key endpoints
 
 ```
 GET /search?q=dragon&type=monsters&level=5-10
+GET /search/suggest?q=dragon&type=monsters
+GET /search/suggest/unified?q=orc&type=monsters  (edition-aware, with alternates)
 GET /types
 GET /sources
 GET /{type}?source=Bestiary&edition=legacy
