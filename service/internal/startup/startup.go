@@ -127,11 +127,15 @@ func ForceRefresh(ctx context.Context, cfg Config) error {
 	if err := downloadDB(ctx, cfg.S3Client); err != nil {
 		return err
 	}
-	s3Etag, _ := cfg.S3Client.HeadObject(ctx, s3.DBKey)
-	writeEtag(s3Etag)
-	status.LocalEtag = s3Etag
-	status.S3Etag = s3Etag
-	status.UpToDate = true
+	s3Etag, err := cfg.S3Client.HeadObject(ctx, s3.DBKey)
+	if err != nil {
+		log.Printf("[startup] warn: could not fetch ETag after refresh: %v", err)
+	} else {
+		writeEtag(s3Etag)
+		status.LocalEtag = s3Etag
+		status.S3Etag = s3Etag
+		status.UpToDate = true
+	}
 
 	if err := openAndSet(); err != nil {
 		return fmt.Errorf("reopen after refresh: %w", err)

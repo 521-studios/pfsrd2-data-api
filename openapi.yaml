@@ -70,10 +70,10 @@ paths:
       operationId: suggest
       summary: Typeahead suggestions using trigram substring matching
       description: |
-        Returns minimal entry data for typeahead/autocomplete UIs.
-        Uses a trigram index for substring matching (e.g. "dragon" matches
+        Returns minimal entry data for typeahead UIs.
+        Trigram index for substring matching (e.g. "dragon" matches
         "Pseudodragon"). Requires at least 3 characters in `q`.
-        No count query — optimized for speed. Hard cap at 15 results.
+        Hard cap at 15 results.
       parameters:
         - name: q
           in: query
@@ -305,9 +305,6 @@ paths:
         alternate template for the creature's edition via the `alternates` table.
         For example, requesting the remastered Elite (MonsterTemplates:22) for a
         legacy creature will automatically use the legacy Elite (MonsterTemplates:1).
-
-        To chain templates, read the creature part from the response and submit
-        it as `creature` in a POST to `/templates/apply` with the next template.
       parameters:
         - name: monsterGameID
           in: path
@@ -556,9 +553,7 @@ components:
     UnifiedSuggestion:
       type: object
       required: [game_id, name, type]
-      description: |
-        Edition-aware typeahead result. The `alternate` field is only present
-        when the entry has a cross-edition counterpart.
+      description: Edition-aware typeahead result.
       properties:
         game_id:
           type: string
@@ -747,7 +742,6 @@ components:
               patches:
                 $ref: "#/components/schemas/PatchDocument"
               creature:
-                description: Full modified creature JSON
                 type: object
           encoding:
             patches:
