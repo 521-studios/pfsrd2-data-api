@@ -333,7 +333,8 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		}
 		arr = append(arr, item)
 	} else if eff.Name != "" {
-		// Determine if target is a string array or object array
+		// Determine if target is a string array or object array.
+		// creature_types is a string array; most other arrays hold objects.
 		if len(arr) > 0 {
 			if _, isStr := arr[0].(string); isStr {
 				arr = append(arr, eff.Name)
@@ -341,7 +342,9 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 				arr = append(arr, map[string]any{"name": eff.Name})
 			}
 		} else {
-			// Empty array — default to string append
+			// Empty array — default to string (creature_types is the common
+			// case for name-based add_item on empty arrays; object arrays
+			// typically use the item field instead).
 			arr = append(arr, eff.Name)
 		}
 	} else {
@@ -376,7 +379,7 @@ func applyRemoveItem(rv ResolvedValue, eff Effect) error {
 				filtered = append(filtered, elem)
 			}
 		case map[string]any:
-			if name, _ := v["name"].(string); name != eff.Name {
+			if name, ok := v["name"].(string); !ok || name != eff.Name {
 				filtered = append(filtered, elem)
 			}
 		default:
