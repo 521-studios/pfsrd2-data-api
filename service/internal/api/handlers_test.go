@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/521studios/pfsrd2-data-api/internal/db"
+	"github.com/521studios/pfsrd2-data-api/internal/s3"
 	"github.com/521studios/pfsrd2-data-api/internal/template"
 	_ "modernc.org/sqlite"
 )
@@ -37,6 +38,16 @@ func (m *mockS3) GetObjectBytes(_ context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("NoSuchKey: %s", key)
 	}
 	return data, nil
+}
+
+// errS3 returns a non-NotFound error for any key, simulating an S3 outage.
+type errS3 struct{}
+
+func (e *errS3) GetObject(_ context.Context, _ string) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("connection refused")
+}
+func (e *errS3) GetObjectBytes(_ context.Context, _ string) ([]byte, error) {
+	return nil, fmt.Errorf("connection refused")
 }
 
 // setupTestDB creates an in-memory SQLite DB with fixtures and sets it as the
@@ -160,12 +171,12 @@ func newTestRouter() http.Handler {
 	return newTestRouterWithS3(nil)
 }
 
-func newTestRouterWithS3(s3Mock *mockS3) http.Handler {
+func newTestRouterWithS3(s3Client s3.ObjectFetcher) http.Handler {
 	cfg := Config{
 		ImageDomain: "images.example.com",
 	}
-	if s3Mock != nil {
-		cfg.S3Client = s3Mock
+	if s3Client != nil {
+		cfg.S3Client = s3Client
 	}
 	return NewRouter(cfg)
 }
@@ -1160,5 +1171,232 @@ func TestServeImageHandler_PathTraversal(t *testing.T) {
 	// The handler's path component check should catch this
 	if w.Code == http.StatusOK {
 		t.Error("path traversal attempt should not return 200")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error path tests
+// ---------------------------------------------------------------------------
+
+func TestGetFullJSON_S3Error(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/monsters/1.3/bestiary/adult_red_dragon.json", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for S3 error, got %d", w.Code)
+	}
+}
+
+func TestGetEntryFull_S3Error(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:100/full", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for S3 error, got %d", w.Code)
+	}
+}
+
+func TestServeImage_S3Error(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/images/Monsters/dragon.png", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for S3 error, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateByID_S3MonsterError(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:22", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for S3 error, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateByID_S3TemplateError(t *testing.T) {
+	setupTestDB(t)
+
+	// Monster JSON is available but template fetch fails
+	creatureJSON, _ := json.Marshal(minimalCreature())
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json": creatureJSON,
+		// template key missing → NoSuchKey
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:22", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing template S3 object, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateByID_InvalidCreatureJSON(t *testing.T) {
+	setupTestDB(t)
+
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json":   []byte(`{invalid json`),
+		"json/monster_templates/1.0/monster_core/elite.json": []byte(`{}`),
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:22", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateByID_InvalidTemplateJSON(t *testing.T) {
+	setupTestDB(t)
+
+	creatureJSON, _ := json.Marshal(minimalCreature())
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json":   creatureJSON,
+		"json/monster_templates/1.0/monster_core/elite.json": []byte(`{invalid`),
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:22", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for invalid template JSON, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateByID_TemplateNotInDB(t *testing.T) {
+	setupTestDB(t)
+
+	creatureJSON, _ := json.Marshal(minimalCreature())
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json": creatureJSON,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:99999", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown template, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateInline_InvalidBody(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	req := httptest.NewRequest("POST", "/api/pfsrd2/templates/apply", bytes.NewReader([]byte(`{invalid`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid body, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateInline_NoTemplateOrGameID(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	body, _ := json.Marshal(map[string]any{"creature": minimalCreature()})
+	req := httptest.NewRequest("POST", "/api/pfsrd2/templates/apply", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing template, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateInline_S3Error(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{})
+
+	body, _ := json.Marshal(map[string]any{
+		"creature":         minimalCreature(),
+		"template_game_id": "MonsterTemplates:22",
+	})
+	req := httptest.NewRequest("POST", "/api/pfsrd2/templates/apply", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for S3 error, got %d", w.Code)
+	}
+}
+
+func TestApplyTemplateInline_TemplateGameIDNotFound(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	body, _ := json.Marshal(map[string]any{
+		"creature":         minimalCreature(),
+		"template_game_id": "MonsterTemplates:99999",
+	})
+	req := httptest.NewRequest("POST", "/api/pfsrd2/templates/apply", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown template_game_id, got %d", w.Code)
+	}
+}
+
+func TestQueryInt_InvalidValue(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test?limit=abc", nil)
+	got := queryInt(req, "limit", 20)
+	if got != 20 {
+		t.Errorf("expected default 20 for invalid value, got %d", got)
+	}
+}
+
+func TestQueryInt_MissingParam(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	got := queryInt(req, "limit", 15)
+	if got != 15 {
+		t.Errorf("expected default 15 for missing param, got %d", got)
+	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	if isNotFound(nil) {
+		t.Error("nil should not be not-found")
+	}
+	if !isNotFound(fmt.Errorf("NoSuchKey: test")) {
+		t.Error("NoSuchKey should be not-found")
+	}
+	if !isNotFound(fmt.Errorf("404 not found")) {
+		t.Error("404 should be not-found")
+	}
+	if isNotFound(fmt.Errorf("connection refused")) {
+		t.Error("connection refused should not be not-found")
 	}
 }
