@@ -107,6 +107,17 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		}
 	}
 
+	// Add traits to some entries for Search trait filtering tests
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Dragon","Fire"]}' WHERE game_id = 'Monsters:100'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Dragon","Electricity"]}' WHERE game_id = 'Monsters:102'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Orc","Humanoid"]}' WHERE game_id = 'Monsters:400'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+
 	// entry_versions: all entries have 1.3, some also have 1.2
 	versions := []struct {
 		gameID, schema, s3Key string
@@ -873,5 +884,51 @@ func TestSources(t *testing.T) {
 			t.Errorf("sources not sorted: %v", names)
 			break
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Search traits filter tests
+// ---------------------------------------------------------------------------
+
+func TestSearch_SingleTrait(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Dragon"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 2 {
+		t.Errorf("expected 2 results with Dragon trait, got %d", result.Total)
+	}
+	for _, e := range result.Results {
+		if e.Name != "Adult Red Dragon" && e.Name != "Young Blue Dragon" {
+			t.Errorf("unexpected entry %q in Dragon trait results", e.Name)
+		}
+	}
+}
+
+func TestSearch_MultipleTraits(t *testing.T) {
+	db := testDB(t)
+	// Both traits must match (AND logic)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Dragon,Fire"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected 1 result with Dragon+Fire traits, got %d", result.Total)
+	}
+	if result.Results[0].Name != "Adult Red Dragon" {
+		t.Errorf("expected Adult Red Dragon, got %q", result.Results[0].Name)
+	}
+}
+
+func TestSearch_TraitNoMatch(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Undead"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 0 {
+		t.Errorf("expected 0 results for Undead trait, got %d", result.Total)
 	}
 }
