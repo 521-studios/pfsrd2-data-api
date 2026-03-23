@@ -20,6 +20,7 @@ type Change struct {
 	Text           string   `json:"text"`
 	ChangeCategory string   `json:"change_category"`
 	Effects        []Effect `json:"effects"`
+	Abilities      []any    `json:"abilities,omitempty"`
 }
 
 // Effect is a single conditional operation targeting a JSONPath within stat_block.
@@ -29,6 +30,9 @@ type Effect struct {
 	Operation   string         `json:"operation"`
 	Value       any            `json:"value,omitempty"`
 	Modifier    map[string]any `json:"modifier,omitempty"`
+	Item        map[string]any `json:"item,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Source      string         `json:"source,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

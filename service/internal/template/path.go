@@ -123,6 +123,61 @@ func resolveSegments(current any, segments []string, arrayIdx int) ([]ResolvedVa
 	return resolveSegments(val, rest, arrayIdx)
 }
 
+// resolveOrCreate resolves a path, creating missing leaf fields as empty arrays.
+// Used by add_item/add_items when the target doesn't exist yet (e.g., adding
+// immunities to a creature that has none).
+func resolveOrCreate(statBlock map[string]any, path string) []ResolvedValue {
+	path = strings.TrimPrefix(path, "$.")
+	segments := splitPath(path)
+	if len(segments) == 0 {
+		return nil
+	}
+
+	// Walk to the parent, expanding wildcards
+	return createAtLeaf(statBlock, segments, -1)
+}
+
+// createAtLeaf walks segments, creating the final segment as an empty array
+// if it doesn't exist. Handles [*] by iterating array elements.
+func createAtLeaf(current any, segments []string, arrayIdx int) []ResolvedValue {
+	if len(segments) == 1 {
+		seg := segments[0]
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		if _, exists := m[seg]; !exists {
+			m[seg] = []any{}
+		}
+		return []ResolvedValue{{Parent: m, Key: seg, ArrayIndex: arrayIdx}}
+	}
+
+	seg := segments[0]
+	rest := segments[1:]
+
+	if seg == "[*]" {
+		arr, ok := current.([]any)
+		if !ok {
+			return nil
+		}
+		var results []ResolvedValue
+		for i := range arr {
+			results = append(results, createAtLeaf(arr[i], rest, i)...)
+		}
+		return results
+	}
+
+	m, ok := current.(map[string]any)
+	if !ok {
+		return nil
+	}
+	val, exists := m[seg]
+	if !exists {
+		return nil
+	}
+	return createAtLeaf(val, rest, arrayIdx)
+}
+
 // resolveScalar resolves a path and returns the first scalar value found.
 // Used by the conditional evaluator to read a single value for comparison.
 func resolveScalar(statBlock map[string]any, path string) (any, bool) {

@@ -30,7 +30,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 			return nil, fmt.Errorf("marshal before snapshot: %w", err)
 		}
 
-		if err := applyChange(statBlock, change); err != nil {
+		if err := applyChange(statBlock, change, tmpl.MonsterTemplate.Changes); err != nil {
 			return nil, fmt.Errorf("apply change %q: %w", change.ChangeCategory, err)
 		}
 
@@ -72,7 +72,8 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 }
 
 // applyChange applies all effects within a single Change to the stat_block.
-func applyChange(statBlock map[string]any, change Change) error {
+// allChanges is passed for add_items operations that reference abilities across changes.
+func applyChange(statBlock map[string]any, change Change, allChanges []Change) error {
 	// Group effects by target to identify conditional chains.
 	// Effects sharing a target form a first-match chain.
 	type targetGroup struct {
@@ -93,6 +94,13 @@ func applyChange(statBlock map[string]any, change Change) error {
 	}
 
 	for _, g := range groups {
+		// add_items is special — it needs access to all changes' abilities
+		if len(g.effects) == 1 && g.effects[0].Operation == "add_items" {
+			if err := applyAddItems(statBlock, g.effects[0], allChanges); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := applyEffectGroup(statBlock, g.effects); err != nil {
 			return err
 		}
@@ -100,8 +108,16 @@ func applyChange(statBlock map[string]any, change Change) error {
 	return nil
 }
 
+// isAccumulatingOp returns true for operations where multiple effects on the
+// same target should all apply (not first-match-wins).
+func isAccumulatingOp(op string) bool {
+	return op == "add_item" || op == "remove_item" || op == "add_modifier"
+}
+
 // applyEffectGroup applies a group of effects sharing the same target.
-// Within a group, conditionals form a first-match chain.
+// For accumulating ops (add_item, remove_item, add_modifier), all matching
+// effects apply. For others (adjustment, replace), conditionals form a
+// first-match chain.
 func applyEffectGroup(statBlock map[string]any, effects []Effect) error {
 	if len(effects) == 0 {
 		return nil
@@ -114,11 +130,22 @@ func applyEffectGroup(statBlock map[string]any, effects []Effect) error {
 		return applyWildcardEffects(statBlock, effects)
 	}
 
-	// Non-wildcard: evaluate conditional chain, first match wins
+	// Check if these effects accumulate or are first-match
+	if isAccumulatingOp(effects[0].Operation) {
+		for _, eff := range effects {
+			if evaluateConditional(statBlock, eff.Conditional, -1) {
+				if err := applySingleEffect(statBlock, eff, -1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	// Non-accumulating: evaluate conditional chain, first match wins
 	for _, eff := range effects {
 		if evaluateConditional(statBlock, eff.Conditional, -1) {
 			return applySingleEffect(statBlock, eff, -1)
-			// First match wins — skip rest
 		}
 	}
 	return nil
@@ -135,19 +162,25 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 		return err
 	}
 
+	// For add_item on missing fields within wildcard parents, create them
+	if len(resolved) == 0 && len(effects) > 0 &&
+		(effects[0].Operation == "add_item" || effects[0].Operation == "add_items") {
+		resolved = resolveOrCreate(statBlock, target)
+	}
+
+	accumulating := isAccumulatingOp(effects[0].Operation)
+
 	for _, rv := range resolved {
-		// For each resolved location, evaluate the conditional chain
-		matched := false
 		for _, eff := range effects {
 			if evaluateConditional(statBlock, eff.Conditional, rv.ArrayIndex) {
 				if err := applyOperation(rv, eff); err != nil {
 					return err
 				}
-				matched = true
-				break // first match wins
+				if !accumulating {
+					break // first match wins for non-accumulating ops
+				}
 			}
 		}
-		_ = matched
 	}
 	return nil
 }
@@ -158,6 +191,12 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	if err != nil {
 		return err
 	}
+
+	// For add_item/add_items on missing fields, create the target array
+	if len(resolved) == 0 && (eff.Operation == "add_item" || eff.Operation == "add_items") {
+		resolved = resolveOrCreate(statBlock, eff.Target)
+	}
+
 	for _, rv := range resolved {
 		if err := applyOperation(rv, eff); err != nil {
 			return err
@@ -173,6 +212,18 @@ func applyOperation(rv ResolvedValue, eff Effect) error {
 		return applyAdjustment(rv, eff)
 	case "add_modifier":
 		return applyAddModifier(rv, eff)
+	case "add_item":
+		return applyAddItem(rv, eff)
+	case "replace":
+		return applyReplace(rv, eff)
+	case "remove_item":
+		return applyRemoveItem(rv, eff)
+	case "select":
+		// Selections are deferred to the client — record in selections array.
+		// For V1, we skip these and return them as-is.
+		return nil
+	case "no_op":
+		return nil
 	default:
 		return fmt.Errorf("unsupported operation: %s", eff.Operation)
 	}
@@ -222,6 +273,118 @@ func applyAddModifier(rv ResolvedValue, eff Effect) error {
 
 	arr = append(arr, modifier)
 	rv.Set(arr)
+	return nil
+}
+
+// applyAddItems appends items from a source path to the target array.
+// The source is typically "$.monster_template.changes[*].abilities" — collecting
+// abilities from all changes in the template.
+func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) error {
+	// Resolve target in stat_block, creating if missing
+	resolved, err := resolvePath(statBlock, eff.Target)
+	if err != nil {
+		return fmt.Errorf("add_items resolve target: %w", err)
+	}
+	if len(resolved) == 0 {
+		resolved = resolveOrCreate(statBlock, eff.Target)
+	}
+
+	// Collect items from the source — currently only
+	// "$.monster_template.changes[*].abilities" is used
+	var items []any
+	for _, c := range allChanges {
+		for _, a := range c.Abilities {
+			items = append(items, a)
+		}
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	for _, rv := range resolved {
+		current := rv.Get()
+		arr, ok := current.([]any)
+		if !ok {
+			arr = []any{}
+		}
+		arr = append(arr, items...)
+		rv.Set(arr)
+	}
+	return nil
+}
+
+// applyAddItem appends an item to the target array.
+// Two forms:
+//   - eff.Item is set: append the item object directly
+//   - eff.Name is set and target is a string array: append the name string
+//   - eff.Name is set and target is an object array: append {name: eff.Name}
+func applyAddItem(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	arr, ok := current.([]any)
+	if !ok {
+		arr = []any{}
+	}
+
+	if eff.Item != nil {
+		item := make(map[string]any)
+		for k, v := range eff.Item {
+			item[k] = v
+		}
+		arr = append(arr, item)
+	} else if eff.Name != "" {
+		// Determine if target is a string array or object array
+		if len(arr) > 0 {
+			if _, isStr := arr[0].(string); isStr {
+				arr = append(arr, eff.Name)
+			} else {
+				arr = append(arr, map[string]any{"name": eff.Name})
+			}
+		} else {
+			// Empty array — default to string append
+			arr = append(arr, eff.Name)
+		}
+	} else {
+		return fmt.Errorf("add_item requires item or name")
+	}
+
+	rv.Set(arr)
+	return nil
+}
+
+// applyReplace sets the target to the given value.
+func applyReplace(rv ResolvedValue, eff Effect) error {
+	rv.Set(eff.Value)
+	return nil
+}
+
+// applyRemoveItem removes an item from an array by name.
+// For string arrays, removes the matching string.
+// For object arrays, removes objects where .name matches.
+func applyRemoveItem(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	arr, ok := current.([]any)
+	if !ok {
+		return nil // nothing to remove from
+	}
+
+	filtered := make([]any, 0, len(arr))
+	for _, elem := range arr {
+		switch v := elem.(type) {
+		case string:
+			if v != eff.Name {
+				filtered = append(filtered, elem)
+			}
+		case map[string]any:
+			if name, _ := v["name"].(string); name != eff.Name {
+				filtered = append(filtered, elem)
+			}
+		default:
+			filtered = append(filtered, elem)
+		}
+	}
+
+	rv.Set(filtered)
 	return nil
 }
 
