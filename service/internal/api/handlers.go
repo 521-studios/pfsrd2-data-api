@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -248,7 +249,9 @@ func (h *handler) getFullJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
+	if _, err := w.Write(body); err != nil {
+		slog.ErrorContext(r.Context(), "failed to write response", "key", key, "err", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +269,11 @@ func (h *handler) getEntry(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
-	// Include available versions
-	versions, _ := db.GetVersions(r.Context(), db.Global(), gameID)
+	// Include available versions (log but don't fail if lookup errors)
+	versions, err := db.GetVersions(r.Context(), db.Global(), gameID)
+	if err != nil {
+		slog.WarnContext(r.Context(), "failed to fetch entry versions", "game_id", gameID, "err", err)
+	}
 	jsonOK(w, map[string]any{
 		"entry":    entry,
 		"versions": versions,
@@ -294,7 +300,10 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 	wantVersion := r.URL.Query().Get("version")
 	s3Key := entry.S3Key
 	if wantVersion != "" {
-		versions, _ := db.GetVersions(r.Context(), db.Global(), gameID)
+		versions, verErr := db.GetVersions(r.Context(), db.Global(), gameID)
+		if verErr != nil {
+			slog.WarnContext(r.Context(), "failed to fetch entry versions", "game_id", gameID, "err", verErr)
+		}
 		for _, v := range versions {
 			if v.SchemaVersion == wantVersion {
 				s3Key = v.S3Key
@@ -313,7 +322,9 @@ func (h *handler) getEntryFull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(body)
+	if _, err := w.Write(body); err != nil {
+		slog.ErrorContext(r.Context(), "failed to write response", "s3_key", s3Key, "err", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -475,43 +486,12 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 	if body.Template != nil {
 		tmpl = *body.Template
 	} else if body.TemplateGameID != "" {
-		// Look up template from DB + S3, preferring the creature's edition
-		d := db.Global()
 		creatureEdition := creatureEditionFromJSON(body.Creature)
-		tmplEntry, err := resolveTemplateEntry(r.Context(), d, body.TemplateGameID, creatureEdition)
+		fetched, err := h.fetchTemplateFromS3(w, r, body.TemplateGameID, body.TemplateVer, creatureEdition)
 		if err != nil {
-			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if tmplEntry == nil {
-			jsonError(w, "template not found", http.StatusNotFound)
-			return
-		}
-
-		s3Key := tmplEntry.S3Key
-		if body.TemplateVer != "" {
-			versions, _ := db.GetVersions(r.Context(), d, tmplEntry.GameID)
-			for _, v := range versions {
-				if v.SchemaVersion == body.TemplateVer {
-					s3Key = v.S3Key
-					break
-				}
-			}
-		}
-
-		tmplBytes, err := h.cfg.S3Client.GetObjectBytes(r.Context(), s3Key)
-		if err != nil {
-			if isNotFound(err) {
-				jsonError(w, "template JSON not found in S3", http.StatusNotFound)
-				return
-			}
-			jsonError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := json.Unmarshal(tmplBytes, &tmpl); err != nil {
-			jsonError(w, "invalid template JSON", http.StatusInternalServerError)
-			return
-		}
+		tmpl = fetched
 	} else {
 		jsonError(w, "template or template_game_id is required", http.StatusBadRequest)
 		return
@@ -559,6 +539,54 @@ func resolveTemplateEntry(ctx context.Context, d *sql.DB, templateGameID string,
 	return tmplEntry, nil
 }
 
+// fetchTemplateFromS3 looks up a template by game_id (with edition resolution),
+// fetches its JSON from S3, and returns the parsed template. On error it writes
+// the HTTP response and returns a non-nil error so the caller can return.
+func (h *handler) fetchTemplateFromS3(w http.ResponseWriter, r *http.Request, gameID, wantVersion string, creatureEdition *string) (template.TemplateJSON, error) {
+	var tmpl template.TemplateJSON
+	d := db.Global()
+
+	tmplEntry, err := resolveTemplateEntry(r.Context(), d, gameID, creatureEdition)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return tmpl, err
+	}
+	if tmplEntry == nil {
+		slog.WarnContext(r.Context(), "template not found", "game_id", gameID)
+		jsonError(w, "template not found", http.StatusNotFound)
+		return tmpl, fmt.Errorf("template not found: %s", gameID)
+	}
+
+	s3Key := tmplEntry.S3Key
+	if wantVersion != "" {
+		versions, verErr := db.GetVersions(r.Context(), d, tmplEntry.GameID)
+		if verErr != nil {
+			slog.WarnContext(r.Context(), "failed to fetch template versions", "game_id", tmplEntry.GameID, "err", verErr)
+		}
+		for _, v := range versions {
+			if v.SchemaVersion == wantVersion {
+				s3Key = v.S3Key
+				break
+			}
+		}
+	}
+
+	tmplBytes, err := h.cfg.S3Client.GetObjectBytes(r.Context(), s3Key)
+	if err != nil {
+		if isNotFound(err) {
+			jsonError(w, "template JSON not found in S3", http.StatusNotFound)
+		} else {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+		}
+		return tmpl, err
+	}
+	if err := json.Unmarshal(tmplBytes, &tmpl); err != nil {
+		jsonError(w, "invalid template JSON", http.StatusInternalServerError)
+		return tmpl, err
+	}
+	return tmpl, nil
+}
+
 // creatureEditionFromJSON reads the "edition" field from an inline creature JSON.
 func creatureEditionFromJSON(creature map[string]any) *string {
 	if ed, ok := creature["edition"].(string); ok {
@@ -573,7 +601,10 @@ func resolveS3Key(r *http.Request, gameID, defaultKey, queryParam string) string
 	if wantVersion == "" {
 		return defaultKey
 	}
-	versions, _ := db.GetVersions(r.Context(), db.Global(), gameID)
+	versions, err := db.GetVersions(r.Context(), db.Global(), gameID)
+	if err != nil {
+		slog.WarnContext(r.Context(), "resolveS3Key: failed to fetch versions", "game_id", gameID, "err", err)
+	}
 	for _, v := range versions {
 		if v.SchemaVersion == wantVersion {
 			return v.S3Key
@@ -591,40 +622,34 @@ func resolveS3Key(r *http.Request, gameID, defaultKey, queryParam string) string
 func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 	mw := multipart.NewWriter(w)
 	w.Header().Set("Content-Type", "multipart/mixed; boundary="+mw.Boundary())
+	defer func() {
+		if err := mw.Close(); err != nil {
+			slog.Error("failed to close multipart writer", "err", err)
+		}
+	}()
 
-	jsonHeader := textproto.MIMEHeader{
-		"Content-Type": {"application/json"},
+	if err := writeJSONPart(mw, "patches", resp.PatchDoc); err != nil {
+		slog.Error("failed to write patches part", "err", err)
+		return
 	}
+	if err := writeJSONPart(mw, "creature", resp.Creature); err != nil {
+		slog.Error("failed to write creature part", "err", err)
+	}
+}
 
-	// Part 1: patch document
+// writeJSONPart writes a single JSON-encoded part to a multipart writer.
+func writeJSONPart(mw *multipart.Writer, name string, v any) error {
 	part, err := mw.CreatePart(textproto.MIMEHeader{
 		"Content-Type":        {"application/json"},
-		"Content-Disposition": {"inline; name=\"patches\""},
+		"Content-Disposition": {fmt.Sprintf("inline; name=%q", name)},
 	})
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("create part %s: %w", name, err)
 	}
-	if err := json.NewEncoder(part).Encode(resp.PatchDoc); err != nil {
-		slog.Error("failed to encode patches part", "err", err)
-		return
+	if err := json.NewEncoder(part).Encode(v); err != nil {
+		return fmt.Errorf("encode part %s: %w", name, err)
 	}
-
-	// Part 2: modified creature
-	part, err = mw.CreatePart(textproto.MIMEHeader{
-		"Content-Type":        jsonHeader["Content-Type"],
-		"Content-Disposition": {"inline; name=\"creature\""},
-	})
-	if err != nil {
-		slog.Error("failed to create creature part", "err", err)
-		return
-	}
-	if err := json.NewEncoder(part).Encode(resp.Creature); err != nil {
-		slog.Error("failed to encode creature part", "err", err)
-		return
-	}
-
-	mw.Close()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -633,13 +658,20 @@ func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("jsonOK: failed to encode response", "err", err)
+	}
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
+	if code >= http.StatusInternalServerError {
+		slog.Error("server error", "code", code, "msg", msg)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		slog.Error("jsonError: failed to encode error response", "err", err)
+	}
 }
 
 func queryInt(r *http.Request, key string, def int) int {

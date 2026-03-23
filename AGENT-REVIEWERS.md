@@ -66,7 +66,7 @@ Review code changes to **ensure the OpenAPI spec (`openapi.yaml`) stays in sync 
 
 ## error-handling-reviewer
 
-Review Go code for **error handling correctness**. Go's explicit error returns are powerful but easy to misuse — unchecked errors are silent bugs.
+Review Go code for **error handling correctness**.
 
 **Patterns to FLAG:**
 

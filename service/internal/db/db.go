@@ -278,14 +278,14 @@ func GetVersions(ctx context.Context, db *sql.DB, gameID string) ([]EntryVersion
 		ORDER BY schema_version
 	`, gameID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query entry_versions: %w", err)
 	}
 	defer rows.Close()
 	var versions []EntryVersion
 	for rows.Next() {
 		var v EntryVersion
 		if err := rows.Scan(&v.GameID, &v.SchemaVersion, &v.S3Key); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan entry_version: %w", err)
 		}
 		versions = append(versions, v)
 	}
@@ -321,14 +321,14 @@ func Types(ctx context.Context, db *sql.DB) ([]TypeCount, error) {
 		FROM entries GROUP BY type ORDER BY type
 	`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query types: %w", err)
 	}
 	defer rows.Close()
 	var types []TypeCount
 	for rows.Next() {
 		var t TypeCount
 		if err := rows.Scan(&t.Type, &t.Count); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan type count: %w", err)
 		}
 		types = append(types, t)
 	}
@@ -339,7 +339,7 @@ func Types(ctx context.Context, db *sql.DB) ([]TypeCount, error) {
 func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 	rows, err := db.QueryContext(ctx, `SELECT name, aonid FROM sources ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query sources: %w", err)
 	}
 	defer rows.Close()
 	var sources []map[string]any
@@ -347,7 +347,7 @@ func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 		var name string
 		var aonid *int
 		if err := rows.Scan(&name, &aonid); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan source: %w", err)
 		}
 		sources = append(sources, map[string]any{"name": name, "aonid": aonid})
 	}
@@ -428,15 +428,51 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 	return results, rows.Err()
 }
 
+// buildWordMatchConds builds SQL conditions for word-based matching.
+// Words with 3+ chars use trigram index; completed words (followed by space)
+// use word-boundary LIKE; short partial words use LIKE substring.
+func buildWordMatchConds(words []string, hasTrailingSpace bool) (conds []string, args []any) {
+	for i, word := range words {
+		isComplete := i < len(words)-1 || hasTrailingSpace
+
+		if len(word) >= 3 {
+			conds = append(conds,
+				"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)")
+			args = append(args, word)
+		}
+
+		if isComplete {
+			lowerWord := strings.ToLower(word)
+			conds = append(conds,
+				"(LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) = ?)")
+			args = append(args, lowerWord+" %", "% "+lowerWord+" %", "% "+lowerWord, lowerWord)
+		} else if len(word) < 3 {
+			conds = append(conds, "LOWER(e.name) LIKE ?")
+			args = append(args, "%"+strings.ToLower(word)+"%")
+		}
+	}
+	return conds, args
+}
+
+// addTypeVersionFilters appends type and version filter conditions.
+func addTypeVersionFilters(conds []string, args []any, types []string, version string) ([]string, []any) {
+	if len(types) > 0 {
+		placeholders := make([]string, len(types))
+		for i, t := range types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if version != "" {
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
+		args = append(args, version)
+	}
+	return conds, args
+}
+
 // Suggest runs a trigram substring search, returning minimal results for typeahead.
-//
-// Query handling:
-//   - Split on spaces into words
-//   - Each word >= 3 chars: trigram MATCH for fast substring candidate lookup
-//   - Each completed word (followed by a space): word-boundary LIKE filter
-//   - Last word (no trailing space): trigram substring match only
-//   - Short words (< 3 chars) after a space: LIKE substring fallback
-//   - Results sorted: prefix matches first, then alphabetical
 func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, error) {
 	trimmed := strings.TrimRight(p.Q, " ")
 	hasTrailingSpace := len(p.Q) > len(trimmed)
@@ -445,8 +481,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	if len(words) == 0 {
 		return []Suggestion{}, nil
 	}
-	// Require at least one word with 3+ chars for trigram efficiency.
-	// Without it, we'd fall back to pure LIKE scans on the full table.
+
 	hasTrigram := false
 	for _, w := range words {
 		if len(w) >= 3 {
@@ -461,50 +496,10 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 		p.Limit = 15
 	}
 
-	args := []any{}
-	conds := []string{}
-
-	for i, word := range words {
-		isComplete := i < len(words)-1 || hasTrailingSpace
-
-		if len(word) >= 3 {
-			// Trigram match for substring candidates
-			conds = append(conds,
-				"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)")
-			args = append(args, word)
-		}
-
-		if isComplete {
-			// Word-boundary match: word must appear as a whole word in the name
-			lowerWord := strings.ToLower(word)
-			conds = append(conds,
-				"(LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) = ?)")
-			args = append(args, lowerWord+" %", "% "+lowerWord+" %", "% "+lowerWord, lowerWord)
-		} else if len(word) < 3 {
-			// Short partial word at end — LIKE substring fallback
-			conds = append(conds, "LOWER(e.name) LIKE ?")
-			args = append(args, "%"+strings.ToLower(word)+"%")
-		}
-	}
-
-	if len(p.Types) > 0 {
-		placeholders := make([]string, len(p.Types))
-		for i, t := range p.Types {
-			placeholders[i] = "?"
-			args = append(args, t)
-		}
-		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
-	}
-
-	if p.Version != "" {
-		conds = append(conds,
-			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
-		args = append(args, p.Version)
-	}
-
+	conds, args := buildWordMatchConds(words, hasTrailingSpace)
+	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	where := strings.Join(conds, " AND ")
 
-	// Sort: prefix matches first, then alphabetical
 	query := fmt.Sprintf(`
 		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
 		FROM entries e
@@ -571,63 +566,10 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 		return []UnifiedSuggestion{}, nil
 	}
 
-	args := []any{}
-	conds := []string{}
-
-	// Check if any word qualifies for trigram matching
-	hasTrigram := false
-	for _, w := range words {
-		if len(w) >= 3 {
-			hasTrigram = true
-			break
-		}
-	}
-
-	if !hasTrigram {
-		// Short query: LIKE substring match for 1-2 char queries
-		conds = append(conds, "LOWER(e.name) LIKE ?")
-		args = append(args, "%"+strings.ToLower(trimmed)+"%")
-	} else {
-		for i, word := range words {
-			isComplete := i < len(words)-1 || hasTrailingSpace
-
-			if len(word) >= 3 {
-				conds = append(conds,
-					"e.id IN (SELECT rowid FROM entries_trigram WHERE name MATCH ?)")
-				args = append(args, word)
-			}
-
-			if isComplete {
-				lowerWord := strings.ToLower(word)
-				conds = append(conds,
-					"(LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) LIKE ? OR LOWER(e.name) = ?)")
-				args = append(args, lowerWord+" %", "% "+lowerWord+" %", "% "+lowerWord, lowerWord)
-			} else if len(word) < 3 {
-				conds = append(conds, "LOWER(e.name) LIKE ?")
-				args = append(args, "%"+strings.ToLower(word)+"%")
-			}
-		}
-	}
-
-	if len(p.Types) > 0 {
-		placeholders := make([]string, len(p.Types))
-		for i, t := range p.Types {
-			placeholders[i] = "?"
-			args = append(args, t)
-		}
-		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
-	}
-
-	if p.Version != "" {
-		conds = append(conds,
-			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
-		args = append(args, p.Version)
-	}
-
+	conds, args := buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
+	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	where := strings.Join(conds, " AND ")
 
-	// Fetch primary matches with their alternates in one query.
-	// We over-fetch (2x limit) to account for dedup when both editions match.
 	query := fmt.Sprintf(`
 		SELECT e.game_id, e.name, e.type, e.level, e.edition, e.image_s3_key,
 		       a2.game_id, a2.name, a2.type, a2.level, a2.edition, a2.image_s3_key
@@ -646,13 +588,41 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	}
 	defer rows.Close()
 
-	// Collect all rows, then dedup alternate pairs.
-	type rawRow struct {
-		primary   UnifiedSuggestion
-		alternate *UnifiedSuggestion
+	rawRows, err := scanUnifiedRows(rows)
+	if err != nil {
+		return nil, err
 	}
-	var rawRows []rawRow
 
+	return deduplicateUnified(rawRows, p.Limit), nil
+}
+
+// buildUnifiedMatchConds builds match conditions for unified suggest.
+// Unlike Suggest, short queries (1-2 chars) use LIKE instead of being rejected.
+func buildUnifiedMatchConds(words []string, hasTrailingSpace bool, trimmed string) ([]string, []any) {
+	hasTrigram := false
+	for _, w := range words {
+		if len(w) >= 3 {
+			hasTrigram = true
+			break
+		}
+	}
+
+	if !hasTrigram {
+		return []string{"LOWER(e.name) LIKE ?"},
+			[]any{"%" + strings.ToLower(trimmed) + "%"}
+	}
+	return buildWordMatchConds(words, hasTrailingSpace)
+}
+
+// unifiedRawRow pairs a primary match with its optional alternate.
+type unifiedRawRow struct {
+	primary   UnifiedSuggestion
+	alternate *UnifiedSuggestion
+}
+
+// scanUnifiedRows reads all rows from the unified suggest query.
+func scanUnifiedRows(rows *sql.Rows) ([]unifiedRawRow, error) {
+	var rawRows []unifiedRawRow
 	for rows.Next() {
 		var s UnifiedSuggestion
 		var altGameID, altName, altType, altEdition, altImage *string
@@ -665,7 +635,7 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 			return nil, fmt.Errorf("scan unified suggestion: %w", err)
 		}
 
-		r := rawRow{primary: s}
+		r := unifiedRawRow{primary: s}
 		if altGameID != nil {
 			r.alternate = &UnifiedSuggestion{
 				GameID:     *altGameID,
@@ -681,19 +651,20 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	return rawRows, nil
+}
 
-	// Build set of game_ids that matched the query directly (appeared as primary).
+// deduplicateUnified merges alternate pairs into single results.
+// When both editions matched: same name → remastered wins; different names → lexical order.
+// When only one matched, it stays primary.
+func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion {
 	matched := map[string]bool{}
 	for _, r := range rawRows {
 		matched[r.primary.GameID] = true
 	}
 
-	// Dedup: when both editions of a pair matched the query, merge into one result.
-	// - Same name: remastered is primary, legacy is alternate
-	// - Different names: lexical order (earlier name is primary)
-	// When only one edition matched, it stays primary — the counterpart rides along.
 	seen := map[string]bool{}
-	results := make([]UnifiedSuggestion, 0, p.Limit)
+	results := make([]UnifiedSuggestion, 0, limit)
 
 	for _, r := range rawRows {
 		if seen[r.primary.GameID] {
@@ -708,16 +679,13 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 		}
 
 		if alt != nil {
-			// Only reorder when both editions matched the query
 			bothMatched := matched[s.GameID] && matched[alt.GameID]
 			if bothMatched {
 				if s.Name == alt.Name {
-					// Same name: remastered wins primary
 					if s.Edition != nil && *s.Edition == "legacy" {
 						s, *alt = *alt, s
 					}
 				} else if s.Name > alt.Name {
-					// Different names: lexical order
 					s, *alt = *alt, s
 				}
 			}
@@ -727,12 +695,12 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 
 		seen[s.GameID] = true
 		results = append(results, s)
-		if len(results) >= p.Limit {
+		if len(results) >= limit {
 			break
 		}
 	}
 
-	return results, nil
+	return results
 }
 
 func deref(s *string) string {

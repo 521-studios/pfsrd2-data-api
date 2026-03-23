@@ -36,11 +36,9 @@ Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` 
 
 ## Game IDs
 
-The `game_id` is the primary key used throughout this API for looking up entries. It is an MD5 hash of `"{source_name}: {page}: {name}"` — derived from the source book name, page number, and entry name. This makes it a **content-addressable identifier** tied to the published game content itself, not to any particular data source or database.
+The `game_id` is an MD5 hash of `"{source_name}: {page}: {name}"` — a content-addressable identifier tied to the published citation, not any particular data source. Any parser processing the same source material produces the same game_id, enabling reconciliation across sources (AoN HTML, direct PDF parsing, etc.).
 
-Because the hash inputs are the published citation (book + page + name), any parser that processes the same source material will produce the same game_id. This allows data from different sources (AoN HTML scraping, direct PDF parsing, etc.) to be compared and reconciled by game_id.
-
-The `game_id` field is stored in the `entries` table and is used by `db.GetByGameID()`. All API lookups use game_id, not aonid (which is Archives of Nethys-specific).
+All API lookups use game_id, not aonid (which is Archives of Nethys-specific).
 
 ## Key endpoints
 
