@@ -552,6 +552,7 @@ func (h *handler) fetchTemplateFromS3(w http.ResponseWriter, r *http.Request, ga
 		return tmpl, err
 	}
 	if tmplEntry == nil {
+		slog.WarnContext(r.Context(), "template not found", "game_id", gameID)
 		jsonError(w, "template not found", http.StatusNotFound)
 		return tmpl, fmt.Errorf("template not found: %s", gameID)
 	}
@@ -662,6 +663,9 @@ func jsonOK(w http.ResponseWriter, v any) {
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
+	if code >= http.StatusInternalServerError {
+		slog.Error("server error", "code", code, "msg", msg)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
