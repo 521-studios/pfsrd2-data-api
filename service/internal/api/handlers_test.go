@@ -449,6 +449,43 @@ func TestApplyTemplateByID(t *testing.T) {
 	}
 }
 
+func TestApplyTemplateByID_WithMonsterVersion(t *testing.T) {
+	setupTestDB(t)
+
+	// Default creature (1.3)
+	defaultCreature := minimalCreature()
+	defaultCreature["schema"] = "1.3"
+	defaultJSON, _ := json.Marshal(defaultCreature)
+
+	// Version-specific creature (1.2) with different schema field
+	v12Creature := minimalCreature()
+	v12Creature["schema"] = "1.2"
+	v12JSON, _ := json.Marshal(v12Creature)
+
+	tmplJSON, _ := json.Marshal(minimalEliteTemplate())
+
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json":   defaultJSON,
+		"json/monsters/1.2/bestiary/adult_red_dragon.json":   v12JSON,
+		"json/monster_templates/1.0/monster_core/elite.json": tmplJSON,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	// Request with ?monster_version=1.2 — should fetch from the 1.2 key
+	req := httptest.NewRequest("GET", "/api/pfsrd2/templates/Monsters:100/apply/MonsterTemplates:22?monster_version=1.2", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	_, creature := parseMultipartResponse(t, w)
+	if creature["schema"] != "1.2" {
+		t.Errorf("expected schema=1.2 (versioned), got %v", creature["schema"])
+	}
+}
+
 func TestApplyTemplateByID_MonsterNotFound(t *testing.T) {
 	setupTestDB(t)
 	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
@@ -1017,8 +1054,13 @@ func TestGetEntryHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	entry := resp["entry"].(map[string]any)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	entry, ok := resp["entry"].(map[string]any)
+	if !ok {
+		t.Fatal("response missing 'entry' map")
+	}
 	if entry["name"] != "Adult Red Dragon" {
 		t.Errorf("expected Adult Red Dragon, got %v", entry["name"])
 	}
@@ -1076,6 +1118,14 @@ func TestGetEntryFullHandler_WithVersion(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	// Verify we got the 1.2 version, not the default
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["schema"] != "1.2" {
+		t.Errorf("expected schema=1.2, got %v — version lookup may have fallen back to default", body["schema"])
 	}
 }
 

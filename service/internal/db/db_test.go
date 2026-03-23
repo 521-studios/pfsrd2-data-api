@@ -737,8 +737,14 @@ func TestSearch_Pagination(t *testing.T) {
 		t.Errorf("expected 3 results on page 2, got %d", len(page2.Results))
 	}
 	// Pages should not overlap
-	if page1.Results[0].GameID == page2.Results[0].GameID {
-		t.Error("page 1 and page 2 overlap")
+	page1IDs := map[string]bool{}
+	for _, r := range page1.Results {
+		page1IDs[r.GameID] = true
+	}
+	for _, r := range page2.Results {
+		if page1IDs[r.GameID] {
+			t.Errorf("page 2 contains overlapping game ID: %s", r.GameID)
+		}
 	}
 }
 
@@ -877,7 +883,11 @@ func TestSources(t *testing.T) {
 	// Verify ordering (alphabetical)
 	names := make([]string, len(sources))
 	for i, s := range sources {
-		names[i] = s["name"].(string)
+		name, ok := s["name"].(string)
+		if !ok {
+			t.Fatalf("source at index %d has missing or invalid name", i)
+		}
+		names[i] = name
 	}
 	for i := 1; i < len(names); i++ {
 		if names[i] < names[i-1] {
