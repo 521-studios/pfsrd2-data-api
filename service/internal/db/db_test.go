@@ -107,6 +107,17 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		}
 	}
 
+	// Add traits to some entries for Search trait filtering tests
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Dragon","Fire"]}' WHERE game_id = 'Monsters:100'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Dragon","Electricity"]}' WHERE game_id = 'Monsters:102'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Orc","Humanoid"]}' WHERE game_id = 'Monsters:400'`); err != nil {
+		t.Fatalf("update attrs: %v", err)
+	}
+
 	// entry_versions: all entries have 1.3, some also have 1.2
 	versions := []struct {
 		gameID, schema, s3Key string
@@ -144,6 +155,23 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		}
 	}
 
+	// Sources table
+	sources := []struct {
+		name  string
+		aonid *int
+	}{
+		{"Bestiary", intPtr(2)},
+		{"Core Rulebook", intPtr(1)},
+		{"Gamemastery Guide", intPtr(3)},
+		{"Monster Core", nil},
+	}
+	for _, s := range sources {
+		_, err := db.Exec(`INSERT INTO sources(name, aonid) VALUES(?, ?)`, s.name, s.aonid)
+		if err != nil {
+			t.Fatalf("insert source %s: %v", s.name, err)
+		}
+	}
+
 	// Rebuild FTS indexes
 	if _, err := db.Exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')"); err != nil {
 		t.Fatalf("rebuild fts: %v", err)
@@ -154,6 +182,7 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 }
 
 func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
 
 // ---------------------------------------------------------------------------
 // Suggest tests
@@ -583,5 +612,333 @@ func TestSuggestUnified_EmptyQuery(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("expected empty results, got %d", len(results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Search tests
+// ---------------------------------------------------------------------------
+
+func TestSearch_NoFilters(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 12 {
+		t.Errorf("expected 12 total entries, got %d", result.Total)
+	}
+}
+
+func TestSearch_FTSQuery(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Q: "dragon"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total == 0 {
+		t.Fatal("expected results for 'dragon'")
+	}
+	found := false
+	for _, e := range result.Results {
+		if e.Type == "spells" && e.Name == "Dragon Breath" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find 'Dragon Breath' spell in search results for 'dragon'")
+	}
+}
+
+func TestSearch_TypeFilter(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Type: "monsters"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range result.Results {
+		if e.Type != "monsters" {
+			t.Errorf("expected type=monsters, got %q for %q", e.Type, e.Name)
+		}
+	}
+}
+
+func TestSearch_SourceFilter(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Source: "Bestiary"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range result.Results {
+		if *e.Source != "Bestiary" {
+			t.Errorf("expected source=Bestiary, got %q", *e.Source)
+		}
+	}
+}
+
+func TestSearch_EditionFilter(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Edition: "legacy"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total == 0 {
+		t.Error("expected legacy results")
+	}
+	for _, e := range result.Results {
+		if *e.Edition != "legacy" {
+			t.Errorf("expected edition=legacy, got %q", *e.Edition)
+		}
+	}
+}
+
+func TestSearch_LevelExact(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Level: "14"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected 1 result for level=14, got %d", result.Total)
+	}
+	if result.Results[0].Name != "Adult Red Dragon" {
+		t.Errorf("expected Adult Red Dragon, got %q", result.Results[0].Name)
+	}
+}
+
+func TestSearch_LevelRange(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Level: "0-2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range result.Results {
+		if e.Level == nil || *e.Level < 0 || *e.Level > 2 {
+			t.Errorf("entry %q level %v outside range 0-2", e.Name, e.Level)
+		}
+	}
+}
+
+func TestSearch_Pagination(t *testing.T) {
+	db := testDB(t)
+	page1, err := Search(context.Background(), db, SearchParams{Limit: 3, Offset: 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	page2, err := Search(context.Background(), db, SearchParams{Limit: 3, Offset: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(page1.Results) != 3 {
+		t.Errorf("expected 3 results on page 1, got %d", len(page1.Results))
+	}
+	if len(page2.Results) != 3 {
+		t.Errorf("expected 3 results on page 2, got %d", len(page2.Results))
+	}
+	// Pages should not overlap
+	page1IDs := map[string]bool{}
+	for _, r := range page1.Results {
+		page1IDs[r.GameID] = true
+	}
+	for _, r := range page2.Results {
+		if page1IDs[r.GameID] {
+			t.Errorf("page 2 contains overlapping game ID: %s", r.GameID)
+		}
+	}
+}
+
+func TestSearch_DefaultLimit(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Limit: 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Default limit is 20, we have 12 entries
+	if len(result.Results) != 12 {
+		t.Errorf("expected all 12 entries with default limit, got %d", len(result.Results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// List tests
+// ---------------------------------------------------------------------------
+
+func TestList_ByType(t *testing.T) {
+	db := testDB(t)
+	result, err := List(context.Background(), db, ListParams{Type: "npcs", Limit: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 1 {
+		t.Errorf("expected 1 npc, got %d", result.Total)
+	}
+	if result.Results[0].Name != "Dragon Cultist" {
+		t.Errorf("expected Dragon Cultist, got %q", result.Results[0].Name)
+	}
+}
+
+func TestList_WithEditionFilter(t *testing.T) {
+	db := testDB(t)
+	result, err := List(context.Background(), db, ListParams{Type: "monsters", Edition: "legacy", Limit: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range result.Results {
+		if *e.Edition != "legacy" {
+			t.Errorf("expected legacy edition, got %q for %q", *e.Edition, e.Name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetVersions tests
+// ---------------------------------------------------------------------------
+
+func TestGetVersions_Found(t *testing.T) {
+	db := testDB(t)
+	versions, err := GetVersions(context.Background(), db, "Monsters:100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 versions for Monsters:100, got %d", len(versions))
+	}
+	// Ordered by schema_version
+	if versions[0].SchemaVersion != "1.2" {
+		t.Errorf("expected first version 1.2, got %q", versions[0].SchemaVersion)
+	}
+	if versions[1].SchemaVersion != "1.3" {
+		t.Errorf("expected second version 1.3, got %q", versions[1].SchemaVersion)
+	}
+}
+
+func TestGetVersions_NotFound(t *testing.T) {
+	db := testDB(t)
+	versions, err := GetVersions(context.Background(), db, "Monsters:99999")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("expected 0 versions, got %d", len(versions))
+	}
+}
+
+func TestGetVersions_SingleVersion(t *testing.T) {
+	db := testDB(t)
+	// Young Blue Dragon only has 1.3
+	versions, err := GetVersions(context.Background(), db, "Monsters:102")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 version, got %d", len(versions))
+	}
+	if versions[0].SchemaVersion != "1.3" {
+		t.Errorf("expected 1.3, got %q", versions[0].SchemaVersion)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Types tests
+// ---------------------------------------------------------------------------
+
+func TestTypes(t *testing.T) {
+	db := testDB(t)
+	types, err := Types(context.Background(), db)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(types) != 3 {
+		t.Fatalf("expected 3 types (monsters, npcs, spells), got %d", len(types))
+	}
+	typeMap := map[string]int{}
+	for _, tc := range types {
+		typeMap[tc.Type] = tc.Count
+	}
+	if typeMap["monsters"] != 10 {
+		t.Errorf("expected 10 monsters, got %d", typeMap["monsters"])
+	}
+	if typeMap["npcs"] != 1 {
+		t.Errorf("expected 1 npc, got %d", typeMap["npcs"])
+	}
+	if typeMap["spells"] != 1 {
+		t.Errorf("expected 1 spell, got %d", typeMap["spells"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sources tests
+// ---------------------------------------------------------------------------
+
+func TestSources(t *testing.T) {
+	db := testDB(t)
+	sources, err := Sources(context.Background(), db)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sources) != 4 {
+		t.Fatalf("expected 4 sources, got %d", len(sources))
+	}
+	// Verify ordering (alphabetical)
+	names := make([]string, len(sources))
+	for i, s := range sources {
+		name, ok := s["name"].(string)
+		if !ok {
+			t.Fatalf("source at index %d has missing or invalid name", i)
+		}
+		names[i] = name
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i] < names[i-1] {
+			t.Errorf("sources not sorted: %v", names)
+			break
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Search traits filter tests
+// ---------------------------------------------------------------------------
+
+func TestSearch_SingleTrait(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Dragon"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 2 {
+		t.Errorf("expected 2 results with Dragon trait, got %d", result.Total)
+	}
+	for _, e := range result.Results {
+		if e.Name != "Adult Red Dragon" && e.Name != "Young Blue Dragon" {
+			t.Errorf("unexpected entry %q in Dragon trait results", e.Name)
+		}
+	}
+}
+
+func TestSearch_MultipleTraits(t *testing.T) {
+	db := testDB(t)
+	// Both traits must match (AND logic)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Dragon,Fire"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected 1 result with Dragon+Fire traits, got %d", result.Total)
+	}
+	if result.Results[0].Name != "Adult Red Dragon" {
+		t.Errorf("expected Adult Red Dragon, got %q", result.Results[0].Name)
+	}
+}
+
+func TestSearch_TraitNoMatch(t *testing.T) {
+	db := testDB(t)
+	result, err := Search(context.Background(), db, SearchParams{Traits: "Undead"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 0 {
+		t.Errorf("expected 0 results for Undead trait, got %d", result.Total)
 	}
 }

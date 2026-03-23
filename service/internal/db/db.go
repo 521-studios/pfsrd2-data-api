@@ -182,9 +182,12 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 		return nil, fmt.Errorf("count: %w", err)
 	}
 
-	// Data query — rank by FTS BM25 when Q is set, else by name
+	// Data query — rank by FTS BM25 when Q is set, else by name.
+	// BM25 requires joining the FTS table directly.
+	ftsJoin := ""
 	orderBy := "e.name ASC"
 	if p.Q != "" {
+		ftsJoin = "JOIN entries_fts ON entries_fts.rowid = e.id"
 		orderBy = "bm25(entries_fts) ASC"
 	}
 
@@ -194,10 +197,11 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 		       e.level, e.source, e.source_page, e.edition,
 		       e.image_s3_key, e.attrs, e.indexed_at
 		FROM entries e
+		%s
 		WHERE %s
 		ORDER BY %s
 		LIMIT ? OFFSET ?
-	`, where, orderBy)
+	`, ftsJoin, where, orderBy)
 	dataArgs := append(args, p.Limit, p.Offset)
 
 	rows, err := db.QueryContext(ctx, dataSQL, dataArgs...)
