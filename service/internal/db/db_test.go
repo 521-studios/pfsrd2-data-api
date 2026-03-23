@@ -626,14 +626,18 @@ func TestSearch_FTSQuery(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Total == 0 {
-		t.Error("expected results for 'dragon'")
+		t.Fatal("expected results for 'dragon'")
 	}
+	found := false
 	for _, e := range result.Results {
 		if e.Type == "spells" && e.Name == "Dragon Breath" {
-			return // found spell result
+			found = true
+			break
 		}
 	}
-	// Dragon entries span monsters, npcs, spells
+	if !found {
+		t.Error("expected to find 'Dragon Breath' spell in search results for 'dragon'")
+	}
 }
 
 func TestSearch_TypeFilter(t *testing.T) {
@@ -685,9 +689,9 @@ func TestSearch_LevelExact(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Total != 1 {
-		t.Errorf("expected 1 result for level=14, got %d", result.Total)
+		t.Fatalf("expected 1 result for level=14, got %d", result.Total)
 	}
-	if result.Total > 0 && result.Results[0].Name != "Adult Red Dragon" {
+	if result.Results[0].Name != "Adult Red Dragon" {
 		t.Errorf("expected Adult Red Dragon, got %q", result.Results[0].Name)
 	}
 }

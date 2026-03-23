@@ -1168,9 +1168,8 @@ func TestServeImageHandler_PathTraversal(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	// Chi URL-decodes path params, so handler sees "../etc/passwd" which contains "/"
-	// The handler's path component check should catch this
-	if w.Code == http.StatusOK {
-		t.Error("path traversal attempt should not return 200")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for path traversal, got %d", w.Code)
 	}
 }
 
