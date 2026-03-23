@@ -159,12 +159,12 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 	// Resolve the target to get all matching locations
 	resolved, err := resolvePath(statBlock, target)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve wildcard %q: %w", target, err)
 	}
 
-	// For add_item on missing fields within wildcard parents, create them
-	if len(resolved) == 0 && len(effects) > 0 &&
-		(effects[0].Operation == "add_item" || effects[0].Operation == "add_items") {
+	// For add_item on missing fields within wildcard parents, create them.
+	// add_items is routed separately through applyAddItems in applyChange.
+	if len(resolved) == 0 && len(effects) > 0 && effects[0].Operation == "add_item" {
 		resolved = resolveOrCreate(statBlock, target)
 	}
 
@@ -189,7 +189,7 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error {
 	resolved, err := resolvePath(statBlock, eff.Target)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve %q: %w", eff.Target, err)
 	}
 
 	// For add_item/add_items on missing fields, create the target array

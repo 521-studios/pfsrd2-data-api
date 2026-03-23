@@ -207,6 +207,52 @@ func TestApply_Ghost_BoggardScout(t *testing.T) {
 	}
 }
 
+// --- Replace operation unit test ---
+
+func TestApply_Replace(t *testing.T) {
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"offense": map[string]any{
+				"offensive_actions": []any{
+					map[string]any{
+						"attack": map[string]any{
+							"damage": []any{
+								map[string]any{"formula": "1d8+4", "damage_type": "slashing"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	tmpl := TemplateJSON{
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{{
+				ChangeCategory: "damage",
+				Text:           "Replace damage type",
+				Effects: []Effect{{
+					Target:    "$.offense.offensive_actions[*].attack.damage[*].damage_type",
+					Operation: "replace",
+					Value:     "negative",
+				}},
+			}},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	actions := resp.Creature["stat_block"].(map[string]any)["offense"].(map[string]any)["offensive_actions"].([]any)
+	dmg := actions[0].(map[string]any)["attack"].(map[string]any)["damage"].([]any)
+	dt := dmg[0].(map[string]any)["damage_type"]
+	if dt != "negative" {
+		t.Errorf("expected damage_type 'negative', got %v", dt)
+	}
+}
+
 // --- Zombie template (add_item, add_items, adjustment) ---
 
 func TestApply_Zombie_GiantGecko(t *testing.T) {
