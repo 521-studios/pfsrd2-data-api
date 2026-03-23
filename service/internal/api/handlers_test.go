@@ -721,7 +721,9 @@ func TestSuggestUnified_SearchByAlternateName(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d: %s", len(results), w.Body.String())
@@ -749,7 +751,9 @@ func TestSuggestUnified_NoDuplicateWhenBothMatch(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	// Count how many orc-related results
 	orcCount := 0
@@ -777,7 +781,9 @@ func TestSuggestUnified_NoAlternateForSoloEntry(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	found := false
 	for _, s := range results {
@@ -807,7 +813,9 @@ func TestSuggestUnified_ShortQuery(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	// Should find Orc Brute/Scrapper (name contains "or")
 	if len(results) == 0 {
@@ -830,7 +838,9 @@ func TestSuggestUnified_SameNameRemasteredWins(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	// Should be exactly 1 result (deduped)
 	kobolds := 0
@@ -873,7 +883,9 @@ func TestSuggestUnified_DifferentNamesLexicalOrder(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	for _, s := range results {
 		if s.Name == "Orc Brute" || s.Name == "Orc Scrapper" {
@@ -901,7 +913,9 @@ func TestSuggestUnified_EmptyQuery(t *testing.T) {
 	}
 
 	var results []db.UnifiedSuggestion
-	json.Unmarshal(w.Body.Bytes(), &results)
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if len(results) != 0 {
 		t.Errorf("expected empty array, got %d results", len(results))
 	}
@@ -943,7 +957,9 @@ func TestSearchHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var result db.SearchResult
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if result.Total == 0 {
 		t.Error("expected search results for 'dragon'")
 	}
@@ -966,7 +982,9 @@ func TestSearchHandler_NoQuery(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result db.SearchResult
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	// No query returns all entries
 	if result.Total == 0 {
 		t.Error("expected all entries when no query")
@@ -985,7 +1003,9 @@ func TestTypesHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var types []db.TypeCount
-	json.Unmarshal(w.Body.Bytes(), &types)
+	if err := json.Unmarshal(w.Body.Bytes(), &types); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if len(types) == 0 {
 		t.Error("expected type counts")
 	}
@@ -1013,7 +1033,9 @@ func TestSourcesHandler(t *testing.T) {
 	}
 	// Sources returns []map[string]any
 	var sources []map[string]any
-	json.Unmarshal(w.Body.Bytes(), &sources)
+	if err := json.Unmarshal(w.Body.Bytes(), &sources); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if len(sources) == 0 {
 		t.Error("expected sources")
 	}
@@ -1031,7 +1053,9 @@ func TestListTypeHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result db.SearchResult
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if len(result.Results) > 3 {
 		t.Errorf("expected at most 3 results, got %d", len(result.Results))
 	}
