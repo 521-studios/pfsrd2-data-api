@@ -622,6 +622,11 @@ func resolveS3Key(r *http.Request, gameID, defaultKey, queryParam string) string
 func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 	mw := multipart.NewWriter(w)
 	w.Header().Set("Content-Type", "multipart/mixed; boundary="+mw.Boundary())
+	defer func() {
+		if err := mw.Close(); err != nil {
+			slog.Error("failed to close multipart writer", "err", err)
+		}
+	}()
 
 	if err := writeJSONPart(mw, "patches", resp.PatchDoc); err != nil {
 		slog.Error("failed to write patches part", "err", err)
@@ -629,10 +634,6 @@ func writeTemplateResult(w http.ResponseWriter, resp *template.ApplyResult) {
 	}
 	if err := writeJSONPart(mw, "creature", resp.Creature); err != nil {
 		slog.Error("failed to write creature part", "err", err)
-		return
-	}
-	if err := mw.Close(); err != nil {
-		slog.Error("failed to close multipart writer", "err", err)
 	}
 }
 
