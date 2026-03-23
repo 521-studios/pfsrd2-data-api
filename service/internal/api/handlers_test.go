@@ -120,6 +120,12 @@ func setupTestDB(t *testing.T) {
 		t.Fatalf("insert remastered kobold: %v", err)
 	}
 
+	// Sources
+	_, err = d.Exec(`INSERT INTO sources(name, aonid) VALUES('Bestiary', 2), ('Monster Core', NULL)`)
+	if err != nil {
+		t.Fatalf("insert sources: %v", err)
+	}
+
 	// Bidirectional alternate links
 	_, err = d.Exec(`INSERT INTO alternates(game_id, alternate_game_id, alternate_type) VALUES
 		('MonsterTemplates:22', 'MonsterTemplates:1', 'legacy'),
@@ -130,6 +136,14 @@ func setupTestDB(t *testing.T) {
 		('Monsters:301', 'Monsters:300', 'legacy')`)
 	if err != nil {
 		t.Fatalf("insert alternates: %v", err)
+	}
+
+	// Entry versions
+	_, err = d.Exec(`INSERT INTO entry_versions(game_id, schema_version, s3_key) VALUES
+		('Monsters:100', '1.3', 'json/monsters/1.3/bestiary/adult_red_dragon.json'),
+		('Monsters:100', '1.2', 'json/monsters/1.2/bestiary/adult_red_dragon.json')`)
+	if err != nil {
+		t.Fatalf("insert entry_versions: %v", err)
 	}
 
 	if _, err := d.Exec("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')"); err != nil {
@@ -862,5 +876,289 @@ func TestCreatureEditionFromJSON(t *testing.T) {
 	ed2 := creatureEditionFromJSON(creature2)
 	if ed2 != nil {
 		t.Errorf("expected nil, got %v", ed2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pre-existing handler tests (backfill)
+// ---------------------------------------------------------------------------
+
+func TestSearchHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search?q=dragon&type=monsters", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result db.SearchResult
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result.Total == 0 {
+		t.Error("expected search results for 'dragon'")
+	}
+	for _, e := range result.Results {
+		if e.Type != "monsters" {
+			t.Errorf("type filter not applied: got %q", e.Type)
+		}
+	}
+}
+
+func TestSearchHandler_NoQuery(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result db.SearchResult
+	json.Unmarshal(w.Body.Bytes(), &result)
+	// No query returns all entries
+	if result.Total == 0 {
+		t.Error("expected all entries when no query")
+	}
+}
+
+func TestTypesHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/types", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var types []db.TypeCount
+	json.Unmarshal(w.Body.Bytes(), &types)
+	if len(types) == 0 {
+		t.Error("expected type counts")
+	}
+	found := false
+	for _, tc := range types {
+		if tc.Type == "monsters" && tc.Count > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected monsters type with count > 0")
+	}
+}
+
+func TestSourcesHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/sources", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// Sources returns []map[string]any
+	var sources []map[string]any
+	json.Unmarshal(w.Body.Bytes(), &sources)
+	if len(sources) == 0 {
+		t.Error("expected sources")
+	}
+}
+
+func TestListTypeHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/monsters?limit=3", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result db.SearchResult
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if len(result.Results) > 3 {
+		t.Errorf("expected at most 3 results, got %d", len(result.Results))
+	}
+	for _, e := range result.Results {
+		if e.Type != "monsters" {
+			t.Errorf("expected type=monsters, got %q", e.Type)
+		}
+	}
+}
+
+func TestGetEntryHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:100", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	entry := resp["entry"].(map[string]any)
+	if entry["name"] != "Adult Red Dragon" {
+		t.Errorf("expected Adult Red Dragon, got %v", entry["name"])
+	}
+	if resp["versions"] == nil {
+		t.Error("expected versions array")
+	}
+}
+
+func TestGetEntryHandler_NotFound(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:99999", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestGetEntryFullHandler(t *testing.T) {
+	setupTestDB(t)
+
+	creatureJSON := []byte(`{"name":"Adult Red Dragon","stat_block":{}}`)
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json": creatureJSON,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:100/full", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("expected application/json, got %q", w.Header().Get("Content-Type"))
+	}
+}
+
+func TestGetEntryFullHandler_WithVersion(t *testing.T) {
+	setupTestDB(t)
+
+	v12JSON := []byte(`{"name":"Adult Red Dragon","schema":"1.2"}`)
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.2/bestiary/adult_red_dragon.json": v12JSON,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:100/full?version=1.2", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetEntryFullHandler_NotFound(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/Monsters:99999/full", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestGetFullJSONHandler(t *testing.T) {
+	setupTestDB(t)
+
+	jsonBody := []byte(`{"name":"test"}`)
+	mock := &mockS3{objects: map[string][]byte{
+		"json/monsters/1.3/bestiary/adult_red_dragon.json": jsonBody,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/monsters/1.3/bestiary/adult_red_dragon.json", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetFullJSONHandler_NotFound(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/monsters/1.3/bestiary/nonexistent.json", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestServeImageHandler(t *testing.T) {
+	setupTestDB(t)
+
+	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
+	mock := &mockS3{objects: map[string][]byte{
+		"images/Monsters/dragon.png": imgData,
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/images/Monsters/dragon.png", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if w.Header().Get("Content-Type") != "image/png" {
+		t.Errorf("expected image/png, got %q", w.Header().Get("Content-Type"))
+	}
+}
+
+func TestServeImageHandler_NotFound(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/images/Monsters/nonexistent.png", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestServeImageHandler_PathTraversal(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&mockS3{objects: map[string][]byte{}})
+
+	// Chi normalizes /../ in URLs, so test with .. embedded in the path param.
+	// The handler checks for ".." in category/filename and returns 400.
+	req := httptest.NewRequest("GET", "/api/pfsrd2/images/Monsters/..%2f..%2fetc%2fpasswd", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Chi URL-decodes path params, so handler sees "../etc/passwd" which contains "/"
+	// The handler's path component check should catch this
+	if w.Code == http.StatusOK {
+		t.Error("path traversal attempt should not return 200")
 	}
 }
