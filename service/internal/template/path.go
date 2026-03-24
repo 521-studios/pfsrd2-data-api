@@ -2,6 +2,7 @@ package template
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -56,21 +57,41 @@ func resolvePath(statBlock map[string]any, path string) ([]ResolvedValue, error)
 	return resolveSegments(statBlock, segments, -1)
 }
 
-// splitPath breaks "foo.bar[*].baz.qux" into ["foo", "bar", "[*]", "baz", "qux"].
+// splitPath breaks a dotted path into segments, respecting bracket expressions.
+//
+//	"foo.bar[*].baz"                       → ["foo", "bar", "[*]", "baz"]
+//	"foo[?(@.key=='val')].baz"             → ["foo", "[?(@.key=='val')]", "baz"]
+//	"foo[?(@.movement_type=='walk')].value" → ["foo", "[?(@.movement_type=='walk')]", "value"]
 func splitPath(path string) []string {
 	var segments []string
-	for _, part := range strings.Split(path, ".") {
-		if idx := strings.Index(part, "[*]"); idx >= 0 {
-			if idx > 0 {
-				segments = append(segments, part[:idx])
+	i := 0
+	for i < len(path) {
+		if path[i] == '[' {
+			// Find matching closing bracket
+			end := strings.Index(path[i:], "]")
+			if end < 0 {
+				segments = append(segments, path[i:])
+				break
 			}
-			segments = append(segments, "[*]")
-			rest := part[idx+3:]
-			if rest != "" {
-				segments = append(segments, strings.TrimPrefix(rest, "."))
+			bracket := path[i : i+end+1]
+			segments = append(segments, bracket)
+			i += end + 1
+			if i < len(path) && path[i] == '.' {
+				i++ // skip dot after bracket
 			}
 		} else {
-			segments = append(segments, part)
+			// Find next dot or bracket
+			end := i
+			for end < len(path) && path[end] != '.' && path[end] != '[' {
+				end++
+			}
+			if end > i {
+				segments = append(segments, path[i:end])
+			}
+			i = end
+			if i < len(path) && path[i] == '.' {
+				i++ // skip dot
+			}
 		}
 	}
 	return segments
@@ -85,10 +106,32 @@ func resolveSegments(current any, segments []string, arrayIdx int) ([]ResolvedVa
 	seg := segments[0]
 	rest := segments[1:]
 
+	// Filter expression: [?(@.field=='value')] or [?(@ == 'value')]
+	if strings.HasPrefix(seg, "[?(") && strings.HasSuffix(seg, ")]") {
+		arr, ok := current.([]any)
+		if !ok {
+			return nil, nil
+		}
+		var results []ResolvedValue
+		for i, elem := range arr {
+			if matchesFilter(elem, seg) {
+				if len(rest) == 0 {
+					results = append(results, ResolvedValue{Parent: arr, Key: i, ArrayIndex: i})
+				} else {
+					sub, err := resolveSegments(elem, rest, i)
+					if err != nil {
+						return nil, err
+					}
+					results = append(results, sub...)
+				}
+			}
+		}
+		return results, nil
+	}
+
 	if seg == "[*]" {
 		arr, ok := current.([]any)
 		if !ok {
-			// Not an array — skip silently (the field might not exist on this element)
 			return nil, nil
 		}
 		var results []ResolvedValue
@@ -155,6 +198,21 @@ func createAtLeaf(current any, segments []string, arrayIdx int) []ResolvedValue 
 	seg := segments[0]
 	rest := segments[1:]
 
+	// Handle filter expressions
+	if strings.HasPrefix(seg, "[?(") && strings.HasSuffix(seg, ")]") {
+		arr, ok := current.([]any)
+		if !ok {
+			return nil
+		}
+		var results []ResolvedValue
+		for i, elem := range arr {
+			if matchesFilter(elem, seg) {
+				results = append(results, createAtLeaf(elem, rest, i)...)
+			}
+		}
+		return results
+	}
+
 	if seg == "[*]" {
 		arr, ok := current.([]any)
 		if !ok {
@@ -176,6 +234,109 @@ func createAtLeaf(current any, segments []string, arrayIdx int) []ResolvedValue 
 		return nil
 	}
 	return createAtLeaf(val, rest, arrayIdx)
+}
+
+// matchesFilter evaluates a JSONPath filter expression against an array element.
+// Supports: [?(@.field=='value')], [?(@ == 'value')]
+func matchesFilter(elem any, filter string) bool {
+	// Strip [?( and )]
+	inner := filter[3 : len(filter)-2]
+	inner = strings.TrimSpace(inner)
+
+	// Parse: @ == 'value' (string element match)
+	if strings.HasPrefix(inner, "@ ==") || strings.HasPrefix(inner, "@==") {
+		idx := strings.Index(inner, "==")
+		val := extractFilterValue(inner[idx+2:])
+		s, ok := elem.(string)
+		return ok && s == val
+	}
+
+	// Parse: @.field == 'value'
+	if strings.HasPrefix(inner, "@.") {
+		// Find operator
+		for _, op := range []string{"==", "!=", ">=", "<=", ">", "<"} {
+			idx := strings.Index(inner, op)
+			if idx < 0 {
+				continue
+			}
+			fieldPath := strings.TrimSpace(inner[2:idx]) // after "@."
+			val := extractFilterValue(inner[idx+len(op):])
+
+			// Resolve the field from the element
+			elemVal := resolveFilterField(elem, fieldPath)
+
+			switch op {
+			case "==":
+				return filterEquals(elemVal, val)
+			case "!=":
+				return !filterEquals(elemVal, val)
+			case ">":
+				return filterCompare(elemVal, val) > 0
+			case "<":
+				return filterCompare(elemVal, val) < 0
+			case ">=":
+				return filterCompare(elemVal, val) >= 0
+			case "<=":
+				return filterCompare(elemVal, val) <= 0
+			}
+		}
+	}
+
+	return false
+}
+
+// extractFilterValue extracts the value from a filter expression like " 'walk'" or " 20".
+func extractFilterValue(s string) string {
+	s = strings.TrimSpace(s)
+	// String literal: 'value' or "value"
+	if (strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'")) ||
+		(strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"")) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// resolveFilterField resolves a dotted field path from an element.
+// e.g., "movement_type" or "attack.weapon"
+func resolveFilterField(elem any, fieldPath string) any {
+	current := elem
+	for _, part := range strings.Split(fieldPath, ".") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = m[part]
+	}
+	return current
+}
+
+// filterEquals compares a resolved value with a filter value string.
+func filterEquals(actual any, expected string) bool {
+	switch v := actual.(type) {
+	case string:
+		return v == expected
+	case float64:
+		if f, err := strconv.ParseFloat(expected, 64); err == nil {
+			return v == f
+		}
+	}
+	return false
+}
+
+// filterCompare compares numeric values. Returns -1, 0, or 1.
+func filterCompare(actual any, expected string) int {
+	a, aOk := toFloat64(actual)
+	b, bOk := toFloat64(parseRHS(expected))
+	if !aOk || !bOk {
+		return 0
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
 }
 
 // resolveScalar resolves a path and returns the first scalar value found.

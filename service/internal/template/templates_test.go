@@ -23,9 +23,10 @@ func loadTemplateFile(t *testing.T, book, name string) TemplateJSON {
 }
 
 // loadCreatureFile loads a creature from the pfsrd2-data directory.
-func loadCreatureFile(t *testing.T, book, name string) map[string]any {
+// typDir is the content type directory (e.g. "monsters", "npcs").
+func loadCreatureFile(t *testing.T, typDir, book, name string) map[string]any {
 	t.Helper()
-	path := filepath.Join(fixtureDir(), "monsters", book, name+".json")
+	path := filepath.Join(fixtureDir(), typDir, book, name+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("fixture not available: %v", err)
@@ -40,7 +41,7 @@ func loadCreatureFile(t *testing.T, book, name string) map[string]any {
 // --- Experimental Cryptids (adjustment + add_modifier only) ---
 
 func TestApply_ExperimentalCryptids_BoggardScout(t *testing.T) {
-	creature := loadCreatureFile(t, "monster_core", "boggard_scout")
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
 	tmpl := loadTemplateFile(t, "dark_archive", "experimental_cryptids")
 
 	resp, err := Apply(creature, tmpl)
@@ -75,7 +76,7 @@ func TestApply_ExperimentalCryptids_BoggardScout(t *testing.T) {
 // --- Skeleton template (add_item, add_items, adjustment) ---
 
 func TestApply_Skeleton_BoggardScout(t *testing.T) {
-	creature := loadCreatureFile(t, "monster_core", "boggard_scout")
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
 	tmpl := loadTemplateFile(t, "book_of_the_dead", "skeleton")
 
 	resp, err := Apply(creature, tmpl)
@@ -148,8 +149,7 @@ func TestApply_Skeleton_BoggardScout(t *testing.T) {
 // Note: replace_highest_with not yet implemented, but add_item/replace should work
 
 func TestApply_Ghost_BoggardScout(t *testing.T) {
-	t.Skip("Ghost template uses replace_highest_with — not yet implemented")
-	creature := loadCreatureFile(t, "monster_core", "boggard_scout")
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
 	tmpl := loadTemplateFile(t, "book_of_the_dead", "ghost")
 
 	resp, err := Apply(creature, tmpl)
@@ -256,7 +256,7 @@ func TestApply_Replace(t *testing.T) {
 // --- Zombie template (add_item, add_items, adjustment) ---
 
 func TestApply_Zombie_GiantGecko(t *testing.T) {
-	creature := loadCreatureFile(t, "monster_core", "giant_gecko")
+	creature := loadCreatureFile(t, "monsters", "monster_core", "giant_gecko")
 	tmpl := loadTemplateFile(t, "book_of_the_dead", "zombie")
 
 	resp, err := Apply(creature, tmpl)
@@ -279,7 +279,7 @@ func TestApply_Zombie_GiantGecko(t *testing.T) {
 // --- Orc NPC template (remove_item, add_item, add_items) ---
 
 func TestApply_OrcNPC_Adept(t *testing.T) {
-	creature := loadCreatureFile(t, "npc_core", "adept")
+	creature := loadCreatureFile(t, "npcs", "npc_core", "adept")
 	tmpl := loadTemplateFile(t, "npc_core", "orc")
 
 	resp, err := Apply(creature, tmpl)
@@ -330,7 +330,7 @@ func TestApply_OrcNPC_Adept(t *testing.T) {
 // --- Corrupt NPC template (adjustment, add_item) ---
 
 func TestApply_Corrupt_Adept(t *testing.T) {
-	creature := loadCreatureFile(t, "npc_core", "adept")
+	creature := loadCreatureFile(t, "npcs", "npc_core", "adept")
 	tmpl := loadTemplateFile(t, "npc_core", "corrupt")
 
 	resp, err := Apply(creature, tmpl)
@@ -343,11 +343,187 @@ func TestApply_Corrupt_Adept(t *testing.T) {
 	}
 }
 
+// --- Dwarf NPC template (replace with filter, remove_item, add_item, add_items) ---
+
+func TestApply_DwarfNPC_Adept(t *testing.T) {
+	creature := loadCreatureFile(t, "npcs", "npc_core", "adept")
+	tmpl := loadTemplateFile(t, "npc_core", "dwarf")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Dwarf replaces walk speed with 20 (if > 20)
+	speeds := getStatBlockValue(t, resp.Creature, "offense", "speed", "movement")
+	for _, s := range speeds.([]any) {
+		sm := s.(map[string]any)
+		if sm["movement_type"] == "walk" {
+			if sm["value"] != float64(20) {
+				t.Errorf("expected walk speed 20 (dwarf), got %v", sm["value"])
+			}
+		}
+	}
+
+	// Human removed, Dwarf added
+	ctypes := getStatBlockValue(t, resp.Creature, "creature_type", "creature_types")
+	hasHuman := false
+	hasDwarf := false
+	for _, ct := range ctypes.([]any) {
+		if ct == "Human" {
+			hasHuman = true
+		}
+		if ct == "Dwarf" {
+			hasDwarf = true
+		}
+	}
+	if hasHuman {
+		t.Error("Human should be removed")
+	}
+	if !hasDwarf {
+		t.Error("Dwarf should be added")
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- Path filter tests ---
+
+func TestResolvePath_Filter(t *testing.T) {
+	sb := map[string]any{
+		"offense": map[string]any{
+			"speed": map[string]any{
+				"movement": []any{
+					map[string]any{"movement_type": "walk", "value": float64(25)},
+					map[string]any{"movement_type": "swim", "value": float64(30)},
+				},
+			},
+		},
+	}
+
+	results, err := resolvePath(sb, "$.offense.speed.movement[?(@.movement_type=='walk')].value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Get() != float64(25) {
+		t.Errorf("expected 25, got %v", results[0].Get())
+	}
+}
+
+func TestResolvePath_FilterStringArray(t *testing.T) {
+	sb := map[string]any{
+		"creature_type": map[string]any{
+			"creature_types": []any{"Human", "Humanoid"},
+		},
+	}
+
+	results, err := resolvePath(sb, "$.creature_type.creature_types[?(@ == 'Human')]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Get() != "Human" {
+		t.Errorf("expected 'Human', got %v", results[0].Get())
+	}
+}
+
 // --- NPC Guerrilla template (adjustment, add_modifier, add_item) ---
 
 func TestApply_Guerrilla_BoggardScout(t *testing.T) {
-	creature := loadCreatureFile(t, "monster_core", "boggard_scout")
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
 	tmpl := loadTemplateFile(t, "npc_core", "guerrilla")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- Vampire template (add_item, adjustment, select) ---
+
+func TestApply_Vampire_BoggardScout(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
+	tmpl := loadTemplateFile(t, "book_of_the_dead", "vampire")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Vampire has select operations — should appear in selections
+	if len(resp.PatchDoc.Selections) == 0 {
+		t.Error("expected selections for vampire template")
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- Amphibious template (add_item with value_from, add_items) ---
+
+func TestApply_Amphibious_BoggardScout(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
+	tmpl := loadTemplateFile(t, "howl_of_the_wild", "amphibious")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- Fire elemental template (add_item, replace_one_die, select) ---
+
+func TestApply_FireElemental_BoggardScout(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
+	tmpl := loadTemplateFile(t, "rage_of_elements", "fire")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(resp.PatchDoc.Selections) == 0 {
+		t.Error("expected selections for fire template")
+	}
+}
+
+// --- Broodpiercer template (adjustment, add_modifier, replace) ---
+
+func TestApply_Broodpiercer_GiantGecko(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "giant_gecko")
+	tmpl := loadTemplateFile(t, "howl_of_the_wild", "broodpiercer")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- Frostbound template (add_item, add_items) ---
+
+func TestApply_Frostbound_BoggardScout(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
+	tmpl := loadTemplateFile(t, "howl_of_the_wild", "frostbound")
 
 	resp, err := Apply(creature, tmpl)
 	if err != nil {

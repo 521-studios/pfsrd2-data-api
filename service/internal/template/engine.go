@@ -3,6 +3,7 @@ package template
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/wI2L/jsondiff"
@@ -62,10 +63,31 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 		}
 	}
 
+	// Collect select operations as selections for the client
+	var selections []any
+	for _, change := range tmpl.MonsterTemplate.Changes {
+		for _, eff := range change.Effects {
+			if eff.Operation == "select" && eff.Selection != nil {
+				sel := map[string]any{
+					"change_category": change.ChangeCategory,
+					"target":          eff.Target,
+					"selection":       eff.Selection,
+				}
+				if eff.Conditional != "" {
+					sel["conditional"] = eff.Conditional
+				}
+				selections = append(selections, sel)
+			}
+		}
+	}
+	if selections == nil {
+		selections = []any{}
+	}
+
 	return &ApplyResult{
 		PatchDoc: PatchDocument{
 			AppliedPatches: patches,
-			Selections:     []any{},
+			Selections:     selections,
 		},
 		Creature: working,
 	}, nil
@@ -187,6 +209,20 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 
 // applySingleEffect resolves the target and applies the operation.
 func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error {
+	// Resolve computed values before applying
+	if eff.ValueFrom != "" {
+		computed, err := evaluateValueFrom(statBlock, eff.ValueFrom, eff.Minimum)
+		if err != nil {
+			// value_from resolution failure is non-fatal (creature may lack the field)
+			return nil
+		}
+		if eff.Item != nil {
+			eff.Item["value"] = computed
+		} else {
+			eff.Value = computed
+		}
+	}
+
 	resolved, err := resolvePath(statBlock, eff.Target)
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", eff.Target, err)
@@ -218,9 +254,13 @@ func applyOperation(rv ResolvedValue, eff Effect) error {
 		return applyReplace(rv, eff)
 	case "remove_item":
 		return applyRemoveItem(rv, eff)
+	case "replace_highest_with":
+		return applyReplaceHighestWith(rv, eff)
+	case "replace_one_die":
+		return applyReplaceOneDie(rv, eff)
+	case "set_reach":
+		return applySetReach(rv, eff)
 	case "select":
-		// Selections are deferred to the client — record in selections array.
-		// For V1, we skip these and return them as-is.
 		return nil
 	case "no_op":
 		return nil
@@ -388,6 +428,75 @@ func applyRemoveItem(rv ResolvedValue, eff Effect) error {
 	}
 
 	rv.Set(filtered)
+	return nil
+}
+
+// applyReplaceHighestWith replaces the highest-value speed with a new movement type.
+// Used by Ghost template to replace the fastest speed with fly speed.
+func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	arr, ok := current.([]any)
+	if !ok {
+		return nil
+	}
+
+	// Find the element with the highest "value" field
+	maxIdx := -1
+	maxVal := math.Inf(-1)
+	for i, elem := range arr {
+		if m, ok := elem.(map[string]any); ok {
+			if v, ok := toFloat64(m["value"]); ok && v > maxVal {
+				maxVal = v
+				maxIdx = i
+			}
+		}
+	}
+
+	if maxIdx >= 0 && eff.Item != nil {
+		// Replace the highest speed with the new item, preserving the value
+		newItem := make(map[string]any)
+		for k, v := range eff.Item {
+			newItem[k] = v
+		}
+		newItem["value"] = maxVal
+		arr[maxIdx] = newItem
+		rv.Set(arr)
+	}
+
+	return nil
+}
+
+// applyReplaceOneDie changes one damage die type in a formula string.
+// Used by Fire elemental template to change one damage die to fire.
+func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	arr, ok := current.([]any)
+	if !ok {
+		return nil
+	}
+	if len(arr) == 0 {
+		return nil
+	}
+
+	// Replace the damage type of the first damage entry
+	if m, ok := arr[0].(map[string]any); ok {
+		if newType, ok := eff.Value.(string); ok {
+			m["damage_type"] = newType
+		}
+	}
+	return nil
+}
+
+// applySetReach sets the reach value on attacks.
+// Used by Miniature template.
+func applySetReach(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	m, ok := current.(map[string]any)
+	if !ok {
+		return nil
+	}
+	m["reach"] = eff.Value
+	rv.Set(m)
 	return nil
 }
 
