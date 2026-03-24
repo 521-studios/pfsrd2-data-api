@@ -239,6 +239,9 @@ func createAtLeaf(current any, segments []string, arrayIdx int) []ResolvedValue 
 // matchesFilter evaluates a JSONPath filter expression against an array element.
 // Supports: [?(@.field=='value')], [?(@ == 'value')]
 func matchesFilter(elem any, filter string) bool {
+	if len(filter) < 6 { // minimum: [?(@)]
+		return false
+	}
 	// Strip [?( and )]
 	inner := filter[3 : len(filter)-2]
 	inner = strings.TrimSpace(inner)
