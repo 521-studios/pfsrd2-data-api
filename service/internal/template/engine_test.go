@@ -125,6 +125,16 @@ func TestApply_Elite_AdultRedDragon(t *testing.T) {
 		t.Errorf("expected Perception 28, got %v", perception)
 	}
 
+	// Skills should be adjusted +2 (path is now $.statistics.skills[*].value)
+	skills := getStatBlockValue(t, resp.Creature, "statistics", "skills")
+	if skillArr, ok := skills.([]any); ok && len(skillArr) > 0 {
+		first := skillArr[0].(map[string]any)
+		// Adult Red Dragon Acrobatics is 23, should be 25
+		if first["name"] == "Acrobatics" && first["value"] != float64(25) {
+			t.Errorf("expected Acrobatics 25 (23+2), got %v", first["value"])
+		}
+	}
+
 	if len(resp.PatchDoc.Selections) != 0 {
 		t.Errorf("expected empty selections, got %v", resp.PatchDoc.Selections)
 	}

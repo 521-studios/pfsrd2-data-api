@@ -33,6 +33,9 @@ type Effect struct {
 	Item        map[string]any `json:"item,omitempty"`
 	Name        string         `json:"name,omitempty"`
 	Source      string         `json:"source,omitempty"`
+	ValueFrom   string         `json:"value_from,omitempty"`
+	Minimum     *float64       `json:"minimum,omitempty"`
+	Selection   map[string]any `json:"selection,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
