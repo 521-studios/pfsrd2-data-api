@@ -3,6 +3,7 @@ package template
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 
@@ -213,7 +214,8 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	if eff.ValueFrom != "" {
 		computed, err := evaluateValueFrom(statBlock, eff.ValueFrom, eff.Minimum)
 		if err != nil {
-			// value_from resolution failure is non-fatal (creature may lack the field)
+			// Non-fatal: creature may lack the field (e.g., no walk speed for swim-only creatures)
+			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
 			return nil
 		}
 		if eff.Item != nil {
