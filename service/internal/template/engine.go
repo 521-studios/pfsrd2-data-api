@@ -481,11 +481,15 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	}
 
 	// Replace the damage type of the first damage entry
-	if m, ok := arr[0].(map[string]any); ok {
-		if newType, ok := eff.Value.(string); ok {
-			m["damage_type"] = newType
-		}
+	m, ok := arr[0].(map[string]any)
+	if !ok {
+		return nil
 	}
+	newType, ok := eff.Value.(string)
+	if !ok {
+		return fmt.Errorf("replace_one_die: value must be a string, got %T", eff.Value)
+	}
+	m["damage_type"] = newType
 	return nil
 }
 

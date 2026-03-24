@@ -534,3 +534,91 @@ func TestApply_Frostbound_BoggardScout(t *testing.T) {
 		t.Error("expected patches")
 	}
 }
+
+// --- Miniature template (set_reach, replace, add_item) ---
+
+func TestApply_Miniature_BoggardScout(t *testing.T) {
+	creature := loadCreatureFile(t, "monsters", "monster_core", "boggard_scout")
+	tmpl := loadTemplateFile(t, "howl_of_the_wild", "miniature")
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Miniature sets size to Tiny
+	size := getStatBlockValue(t, resp.Creature, "creature_type", "size")
+	if size != "Tiny" {
+		t.Errorf("expected size Tiny, got %v", size)
+	}
+
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches")
+	}
+}
+
+// --- value_from unit tests ---
+
+func TestEvaluateValueFrom_Max(t *testing.T) {
+	sb := map[string]any{
+		"statistics": map[string]any{
+			"skills": []any{
+				map[string]any{"name": "Athletics", "value": float64(10)},
+				map[string]any{"name": "Stealth", "value": float64(15)},
+				map[string]any{"name": "Acrobatics", "value": float64(8)},
+			},
+		},
+	}
+	val, err := evaluateValueFrom(sb, "$.statistics.skills[*].value | max", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != float64(15) {
+		t.Errorf("expected 15, got %v", val)
+	}
+}
+
+func TestEvaluateValueFrom_Division(t *testing.T) {
+	sb := map[string]any{
+		"offense": map[string]any{
+			"speed": map[string]any{
+				"movement": []any{
+					map[string]any{"movement_type": "walk", "value": float64(30)},
+				},
+			},
+		},
+	}
+	min15 := float64(15)
+	val, err := evaluateValueFrom(sb, "$.offense.speed.movement[?(@.movement_type=='walk')].value / 2", &min15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != float64(15) {
+		t.Errorf("expected 15 (30/2=15, min 15), got %v", val)
+	}
+
+	// Test with value above minimum
+	sb["offense"].(map[string]any)["speed"].(map[string]any)["movement"].([]any)[0].(map[string]any)["value"] = float64(50)
+	val, err = evaluateValueFrom(sb, "$.offense.speed.movement[?(@.movement_type=='walk')].value / 2", &min15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != float64(25) {
+		t.Errorf("expected 25 (50/2=25), got %v", val)
+	}
+}
+
+func TestEvaluateValueFrom_HighForLevel(t *testing.T) {
+	sb := map[string]any{
+		"creature_type": map[string]any{"level": float64(5)},
+		"statistics":    map[string]any{"skills": []any{}},
+	}
+	val, err := evaluateValueFrom(sb, "$.statistics.skills | high_for_level", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Level 5 high skill = 16
+	if val != float64(16) {
+		t.Errorf("expected 16 for level 5 high_for_level, got %v", val)
+	}
+}

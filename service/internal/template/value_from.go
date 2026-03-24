@@ -107,8 +107,9 @@ func resolveSingleNumeric(statBlock map[string]any, path string) (float64, error
 }
 
 // resolveHighForLevel looks up the "high" skill value from the PF2e building
-// rules table based on the creature's level.
-func resolveHighForLevel(statBlock map[string]any, path string) (float64, error) {
+// rules table based on the creature's level. The path parameter is unused —
+// high_for_level always derives from creature level.
+func resolveHighForLevel(statBlock map[string]any, _ string) (float64, error) {
 	level, ok := resolveScalar(statBlock, "$.creature_type.level")
 	if !ok {
 		return 0, fmt.Errorf("cannot determine creature level for high_for_level")
