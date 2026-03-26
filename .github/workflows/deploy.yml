@@ -53,7 +53,7 @@ jobs:
             go build -ldflags="-s -w" -o bootstrap ./cmd/lambda
           zip ../function.zip bootstrap
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
@@ -121,7 +121,7 @@ jobs:
             go build -ldflags="-s -w" -o bootstrap ./cmd/lambda
           zip ../function.zip bootstrap
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
