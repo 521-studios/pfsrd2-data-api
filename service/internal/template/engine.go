@@ -386,12 +386,16 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		arr = []any{}
 	}
 
-	// Determine the name of the item being added
-	addName := eff.Name
-	if addName == "" && eff.Item != nil {
+	// Determine the name of the item being added.
+	// Prioritize eff.Item["name"] since that's what actually gets appended.
+	addName := ""
+	if eff.Item != nil {
 		if n, ok := eff.Item["name"].(string); ok {
 			addName = n
 		}
+	}
+	if addName == "" {
+		addName = eff.Name
 	}
 
 	// Skip if an item with this name already exists

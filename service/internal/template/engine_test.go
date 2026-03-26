@@ -518,3 +518,95 @@ func TestAddItem_Dedup_StringArray(t *testing.T) {
 		t.Errorf("expected 2 creature_types (dedup Animal), got %d: %v", len(types), types)
 	}
 }
+
+func TestAddItem_Dedup_NameAgainstObjectArray(t *testing.T) {
+	// eff.Name used to add to an array of objects — should dedup by matching name field
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{
+				"creature_types": []any{
+					map[string]any{"name": "Animal", "type": "trait"},
+				},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add types",
+					ChangeCategory: "traits",
+					Effects: []Effect{
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Animal"}, // dup
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Ghost"},  // new
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	ct := resp.Creature["stat_block"].(map[string]any)["creature_type"].(map[string]any)
+	types := ct["creature_types"].([]any)
+
+	if len(types) != 2 {
+		t.Errorf("expected 2 creature_types (dedup Animal), got %d: %v", len(types), types)
+	}
+}
+
+func TestWildcard_AddItem_EmptyArrayCleanup(t *testing.T) {
+	// When all conditional effects fail, the eagerly created array should be removed
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"defense": map[string]any{
+				"hitpoints": []any{
+					map[string]any{
+						"hp": float64(100),
+						// No "weaknesses" field — resolveOrCreate will create it
+					},
+				},
+			},
+			"creature_type": map[string]any{
+				"level": float64(13), // Level that falls through all conditionals
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add weaknesses",
+					ChangeCategory: "weaknesses",
+					Effects: []Effect{
+						// Only matches level <= 3
+						{
+							Target: "$.defense.hitpoints[*].weaknesses", Operation: "add_item",
+							Item:        map[string]any{"name": "force", "value": float64(3)},
+							Conditional: "$.creature_type.level <= 3",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	hp := resp.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["hitpoints"].([]any)[0].(map[string]any)
+	if _, exists := hp["weaknesses"]; exists {
+		t.Errorf("expected weaknesses to be absent (all conditionals failed), got %v", hp["weaknesses"])
+	}
+}
