@@ -540,6 +540,62 @@ func TestSuggestUnified_SameNameRemasteredWins(t *testing.T) {
 	}
 }
 
+func TestDeduplicateUnified_LegacyOnlyMatchSwapsToRemastered(t *testing.T) {
+	legacy := "legacy"
+	remastered := "remastered"
+
+	// Only the legacy entry appeared in search results (matched the query).
+	// The remastered alternate is attached via JOIN but didn't match the query itself.
+	rawRows := []unifiedRawRow{
+		{
+			primary:   UnifiedSuggestion{GameID: "Monsters:OLD", Name: "Orc Brute", Type: "monsters", Edition: &legacy},
+			alternate: &UnifiedSuggestion{GameID: "Monsters:NEW", Name: "Orc Scrapper", Type: "monsters", Edition: &remastered},
+		},
+	}
+
+	results := deduplicateUnified(rawRows, 15)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Name != "Orc Scrapper" {
+		t.Errorf("expected remastered 'Orc Scrapper' as primary, got %q", r.Name)
+	}
+	if r.Edition == nil || *r.Edition != "remastered" {
+		t.Errorf("expected remastered edition, got %v", r.Edition)
+	}
+	if r.Alternate == nil {
+		t.Fatal("expected legacy alternate")
+	}
+	if r.Alternate.Name != "Orc Brute" {
+		t.Errorf("expected legacy 'Orc Brute' as alternate, got %q", r.Alternate.Name)
+	}
+}
+
+func TestDeduplicateUnified_RemasteredPrimaryUnchanged(t *testing.T) {
+	legacy := "legacy"
+	remastered := "remastered"
+
+	// Remastered is already primary — should stay unchanged.
+	rawRows := []unifiedRawRow{
+		{
+			primary:   UnifiedSuggestion{GameID: "Monsters:NEW", Name: "Wolf", Type: "monsters", Edition: &remastered},
+			alternate: &UnifiedSuggestion{GameID: "Monsters:OLD", Name: "Wolf", Type: "monsters", Edition: &legacy},
+		},
+	}
+
+	results := deduplicateUnified(rawRows, 15)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "Wolf" || *results[0].Edition != "remastered" {
+		t.Error("remastered primary should be unchanged")
+	}
+	if results[0].Alternate == nil || *results[0].Alternate.Edition != "legacy" {
+		t.Error("legacy alternate should be preserved")
+	}
+}
+
 func TestSuggestUnified_ShortQuery(t *testing.T) {
 	db := testDB(t)
 	// 2-char query should work via LIKE

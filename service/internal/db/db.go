@@ -683,15 +683,9 @@ func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion 
 		}
 
 		if alt != nil {
-			bothMatched := matched[s.GameID] && matched[alt.GameID]
-			if bothMatched {
-				if s.Name == alt.Name {
-					if s.Edition != nil && *s.Edition == "legacy" {
-						s, *alt = *alt, s
-					}
-				} else if s.Name > alt.Name {
-					s, *alt = *alt, s
-				}
+			// Always prefer remastered as primary
+			if s.Edition != nil && *s.Edition == "legacy" && alt.Edition != nil && *alt.Edition == "remastered" {
+				s, *alt = *alt, s
 			}
 			s.Alternate = alt
 			seen[alt.GameID] = true
