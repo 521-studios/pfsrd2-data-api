@@ -187,8 +187,10 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 
 	// For add_item on missing fields within wildcard parents, create them.
 	// add_items is routed separately through applyAddItems in applyChange.
+	created := false
 	if len(resolved) == 0 && len(effects) > 0 && effects[0].Operation == "add_item" {
 		resolved = resolveOrCreate(statBlock, target)
+		created = true
 	}
 
 	accumulating := isAccumulatingOp(effects[0].Operation)
@@ -205,6 +207,21 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 			}
 		}
 	}
+
+	// Clean up empty arrays that were eagerly created but never populated
+	// (all conditional effects failed to match)
+	if created {
+		for _, rv := range resolved {
+			if arr, ok := rv.Get().([]any); ok && len(arr) == 0 {
+				if m, ok := rv.Parent.(map[string]any); ok {
+					if key, ok := rv.Key.(string); ok {
+						delete(m, key)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
