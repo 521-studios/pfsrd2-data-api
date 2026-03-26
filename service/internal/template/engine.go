@@ -357,6 +357,7 @@ func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) er
 }
 
 // applyAddItem appends an item to the target array.
+// Deduplicates by name — if an item with the same name already exists, it is skipped.
 // Two forms:
 //   - eff.Item is set: append the item object directly
 //   - eff.Name is set and target is a string array: append the name string
@@ -366,6 +367,19 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 	arr, ok := current.([]any)
 	if !ok {
 		arr = []any{}
+	}
+
+	// Determine the name of the item being added
+	addName := eff.Name
+	if addName == "" && eff.Item != nil {
+		if n, ok := eff.Item["name"].(string); ok {
+			addName = n
+		}
+	}
+
+	// Skip if an item with this name already exists
+	if addName != "" && arrayContainsName(arr, addName) {
+		return nil
 	}
 
 	if eff.Item != nil {
@@ -395,6 +409,24 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 
 	rv.Set(arr)
 	return nil
+}
+
+// arrayContainsName checks if an array already contains an item with the given name.
+// Handles both string arrays and object arrays with a "name" field.
+func arrayContainsName(arr []any, name string) bool {
+	for _, elem := range arr {
+		switch v := elem.(type) {
+		case string:
+			if v == name {
+				return true
+			}
+		case map[string]any:
+			if n, ok := v["name"].(string); ok && n == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // applyReplace sets the target to the given value.
