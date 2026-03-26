@@ -422,3 +422,191 @@ func TestApply_AddModifier_MissingTarget(t *testing.T) {
 		t.Errorf("expected no patches for missing target, got %d", len(resp.PatchDoc.AppliedPatches))
 	}
 }
+
+func TestAddItem_Dedup_ObjectArray(t *testing.T) {
+	// Creature already has "poison" immunity
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"defense": map[string]any{
+				"hitpoints": []any{
+					map[string]any{
+						"hp": float64(100),
+						"immunities": []any{
+							map[string]any{"name": "poison", "subtype": "immunity", "type": "stat_block_section"},
+							map[string]any{"name": "disease", "subtype": "immunity", "type": "stat_block_section"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add immunities",
+					ChangeCategory: "immunities",
+					Effects: []Effect{
+						// "poison" already exists — should be skipped
+						{Target: "$.defense.hitpoints[*].immunities", Operation: "add_item",
+							Item: map[string]any{"name": "poison", "subtype": "immunity", "type": "stat_block_section"}},
+						// "paralyzed" is new — should be added
+						{Target: "$.defense.hitpoints[*].immunities", Operation: "add_item",
+							Item: map[string]any{"name": "paralyzed", "subtype": "immunity", "type": "stat_block_section"}},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	hp := resp.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["hitpoints"].([]any)[0].(map[string]any)
+	immunities := hp["immunities"].([]any)
+
+	// Should have 3 (poison, disease, paralyzed) not 4 (no duplicate poison)
+	if len(immunities) != 3 {
+		names := make([]string, len(immunities))
+		for i, im := range immunities {
+			names[i] = im.(map[string]any)["name"].(string)
+		}
+		t.Errorf("expected 3 immunities (dedup poison), got %d: %v", len(immunities), names)
+	}
+}
+
+func TestAddItem_Dedup_StringArray(t *testing.T) {
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{
+				"creature_types": []any{"Animal"},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add types",
+					ChangeCategory: "traits",
+					Effects: []Effect{
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Animal"}, // dup
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Undead"}, // new
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	ct := resp.Creature["stat_block"].(map[string]any)["creature_type"].(map[string]any)
+	types := ct["creature_types"].([]any)
+
+	if len(types) != 2 {
+		t.Errorf("expected 2 creature_types (dedup Animal), got %d: %v", len(types), types)
+	}
+}
+
+func TestAddItem_Dedup_NameAgainstObjectArray(t *testing.T) {
+	// eff.Name used to add to an array of objects — should dedup by matching name field
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{
+				"creature_types": []any{
+					map[string]any{"name": "Animal", "type": "trait"},
+				},
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add types",
+					ChangeCategory: "traits",
+					Effects: []Effect{
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Animal"}, // dup
+						{Target: "$.creature_type.creature_types", Operation: "add_item", Name: "Ghost"},  // new
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	ct := resp.Creature["stat_block"].(map[string]any)["creature_type"].(map[string]any)
+	types := ct["creature_types"].([]any)
+
+	if len(types) != 2 {
+		t.Errorf("expected 2 creature_types (dedup Animal), got %d: %v", len(types), types)
+	}
+}
+
+func TestWildcard_AddItem_EmptyArrayCleanup(t *testing.T) {
+	// When all conditional effects fail, the eagerly created array should be removed
+	creature := map[string]any{
+		"stat_block": map[string]any{
+			"defense": map[string]any{
+				"hitpoints": []any{
+					map[string]any{
+						"hp": float64(100),
+						// No "weaknesses" field — resolveOrCreate will create it
+					},
+				},
+			},
+			"creature_type": map[string]any{
+				"level": float64(13), // Level that falls through all conditionals
+			},
+		},
+	}
+
+	tmpl := TemplateJSON{
+		Name: "Test",
+		MonsterTemplate: MonsterTemplate{
+			Name: "Test",
+			Changes: []Change{
+				{
+					Text:           "Add weaknesses",
+					ChangeCategory: "weaknesses",
+					Effects: []Effect{
+						// Only matches level <= 3
+						{
+							Target: "$.defense.hitpoints[*].weaknesses", Operation: "add_item",
+							Item:        map[string]any{"name": "force", "value": float64(3)},
+							Conditional: "$.creature_type.level <= 3",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	hp := resp.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["hitpoints"].([]any)[0].(map[string]any)
+	if _, exists := hp["weaknesses"]; exists {
+		t.Errorf("expected weaknesses to be absent (all conditionals failed), got %v", hp["weaknesses"])
+	}
+}

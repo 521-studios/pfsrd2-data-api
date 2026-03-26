@@ -671,7 +671,7 @@ func TestSuggestUnified_MatchWithAlternate(t *testing.T) {
 	setupTestDB(t)
 	r := newTestRouter()
 
-	// Search for "orc brute" (legacy name) — should get one result with alternate
+	// Search for "orc brute" (legacy name) — remastered is always preferred as primary
 	req := httptest.NewRequest("GET", "/api/pfsrd2/search/suggest/unified?q=orc+brute", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -690,20 +690,20 @@ func TestSuggestUnified_MatchWithAlternate(t *testing.T) {
 	}
 
 	s := results[0]
-	if s.Name != "Orc Brute" {
-		t.Errorf("expected primary 'Orc Brute', got %q", s.Name)
+	if s.Name != "Orc Scrapper" {
+		t.Errorf("expected primary 'Orc Scrapper' (remastered preferred), got %q", s.Name)
 	}
-	if s.Edition == nil || *s.Edition != "legacy" {
-		t.Errorf("expected edition 'legacy', got %v", s.Edition)
+	if s.Edition == nil || *s.Edition != "remastered" {
+		t.Errorf("expected edition 'remastered', got %v", s.Edition)
 	}
 	if s.Alternate == nil {
 		t.Fatal("expected alternate, got nil")
 	}
-	if s.Alternate.Name != "Orc Scrapper" {
-		t.Errorf("expected alternate 'Orc Scrapper', got %q", s.Alternate.Name)
+	if s.Alternate.Name != "Orc Brute" {
+		t.Errorf("expected alternate 'Orc Brute', got %q", s.Alternate.Name)
 	}
-	if s.Alternate.Edition == nil || *s.Alternate.Edition != "remastered" {
-		t.Errorf("expected alternate edition 'remastered', got %v", s.Alternate.Edition)
+	if s.Alternate.Edition == nil || *s.Alternate.Edition != "legacy" {
+		t.Errorf("expected alternate edition 'legacy', got %v", s.Alternate.Edition)
 	}
 }
 
@@ -868,12 +868,12 @@ func TestSuggestUnified_SameNameRemasteredWins(t *testing.T) {
 	}
 }
 
-func TestSuggestUnified_DifferentNamesLexicalOrder(t *testing.T) {
+func TestSuggestUnified_DifferentNamesRemasteredPreferred(t *testing.T) {
 	setupTestDB(t)
 	r := newTestRouter()
 
-	// "orc" matches both Orc Brute and Orc Scrapper.
-	// Lexical order: "Orc Brute" < "Orc Scrapper", so Brute is primary.
+	// "orc" matches both Orc Brute (legacy) and Orc Scrapper (remastered).
+	// Remastered is always preferred as primary.
 	req := httptest.NewRequest("GET", "/api/pfsrd2/search/suggest/unified?q=orc", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -889,11 +889,11 @@ func TestSuggestUnified_DifferentNamesLexicalOrder(t *testing.T) {
 
 	for _, s := range results {
 		if s.Name == "Orc Brute" || s.Name == "Orc Scrapper" {
-			if s.Name != "Orc Brute" {
-				t.Errorf("expected lexical winner 'Orc Brute' as primary, got %q", s.Name)
+			if s.Name != "Orc Scrapper" {
+				t.Errorf("expected remastered 'Orc Scrapper' as primary, got %q", s.Name)
 			}
-			if s.Alternate == nil || s.Alternate.Name != "Orc Scrapper" {
-				t.Errorf("expected 'Orc Scrapper' as alternate")
+			if s.Alternate == nil || s.Alternate.Name != "Orc Brute" {
+				t.Errorf("expected 'Orc Brute' as alternate")
 			}
 			break
 		}

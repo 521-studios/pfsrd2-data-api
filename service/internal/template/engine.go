@@ -187,8 +187,10 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 
 	// For add_item on missing fields within wildcard parents, create them.
 	// add_items is routed separately through applyAddItems in applyChange.
+	created := false
 	if len(resolved) == 0 && len(effects) > 0 && effects[0].Operation == "add_item" {
 		resolved = resolveOrCreate(statBlock, target)
+		created = true
 	}
 
 	accumulating := isAccumulatingOp(effects[0].Operation)
@@ -205,6 +207,21 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 			}
 		}
 	}
+
+	// Clean up empty arrays that were eagerly created but never populated
+	// (all conditional effects failed to match)
+	if created {
+		for _, rv := range resolved {
+			if arr, ok := rv.Get().([]any); ok && len(arr) == 0 {
+				if m, ok := rv.Parent.(map[string]any); ok {
+					if key, ok := rv.Key.(string); ok {
+						delete(m, key)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -357,6 +374,7 @@ func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) er
 }
 
 // applyAddItem appends an item to the target array.
+// Deduplicates by name — if an item with the same name already exists, it is skipped.
 // Two forms:
 //   - eff.Item is set: append the item object directly
 //   - eff.Name is set and target is a string array: append the name string
@@ -366,6 +384,23 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 	arr, ok := current.([]any)
 	if !ok {
 		arr = []any{}
+	}
+
+	// Determine the name of the item being added.
+	// Prioritize eff.Item["name"] since that's what actually gets appended.
+	addName := ""
+	if eff.Item != nil {
+		if n, ok := eff.Item["name"].(string); ok {
+			addName = n
+		}
+	}
+	if addName == "" {
+		addName = eff.Name
+	}
+
+	// Skip if an item with this name already exists
+	if addName != "" && arrayContainsName(arr, addName) {
+		return nil
 	}
 
 	if eff.Item != nil {
@@ -395,6 +430,24 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 
 	rv.Set(arr)
 	return nil
+}
+
+// arrayContainsName checks if an array already contains an item with the given name.
+// Handles both string arrays and object arrays with a "name" field.
+func arrayContainsName(arr []any, name string) bool {
+	for _, elem := range arr {
+		switch v := elem.(type) {
+		case string:
+			if v == name {
+				return true
+			}
+		case map[string]any:
+			if n, ok := v["name"].(string); ok && n == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // applyReplace sets the target to the given value.
