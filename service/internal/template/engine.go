@@ -245,7 +245,12 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 			return nil
 		}
 		if m := eff.ItemMap(); m != nil {
-			m["value"] = computed
+			cp := make(map[string]any)
+			for k, v := range m {
+				cp[k] = v
+			}
+			cp["value"] = computed
+			eff.Item = cp
 		} else {
 			eff.Value = computed
 		}
@@ -570,7 +575,7 @@ func applyRemoveAllExcept(rv ResolvedValue, eff Effect) error {
 	filtered := make([]any, 0, len(arr))
 	for _, elem := range arr {
 		if m, ok := elem.(map[string]any); ok {
-			if mt, ok := m["movement_type"].(string); ok && mt == eff.MovementType {
+			if mt, ok := m["movement_type"].(string); ok && strings.EqualFold(mt, eff.MovementType) {
 				filtered = append(filtered, elem)
 			}
 		}

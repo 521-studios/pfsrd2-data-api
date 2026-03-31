@@ -232,7 +232,11 @@ func resolveOrCreateConditional(statBlock map[string]any, path string, effects [
 			}
 		}
 		if anyMatch {
-			results = append(results, createAtLeaf(elem, restSegments, i)...)
+			if len(restSegments) == 0 {
+				results = append(results, ResolvedValue{Parent: arr, Key: i, ArrayIndex: i})
+			} else {
+				results = append(results, createAtLeaf(elem, restSegments, i)...)
+			}
 		}
 	}
 	return results
