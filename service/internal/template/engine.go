@@ -343,6 +343,10 @@ func applyAdjustment(statBlock map[string]any, rv ResolvedValue, eff Effect) err
 // to find all maps along the resolution chain and replaces the old value in
 // their text fields.
 func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue, oldVal, newVal float64) {
+	if oldVal == newVal {
+		return
+	}
+
 	oldStr := formatNum(oldVal)
 	newStr := formatNum(newVal)
 	pattern := regexp.MustCompile(`(^|[^\d])` + regexp.QuoteMeta(oldStr) + `($|[^\d])`)
@@ -358,14 +362,8 @@ func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue
 		}
 	}
 
-	// Update immediate parent
-	if parent, ok := rv.Parent.(map[string]any); ok {
-		replaceText(parent)
-	}
-
-	// Walk the target path to find ancestor maps and update their text too.
-	// e.g., for $.defense.automatic_abilities[*].saving_throw[*].dc,
-	// also update text in each automatic_abilities element (the ability).
+	// Walk the target path to find all ancestor maps (including the immediate
+	// parent) and update their text fields.
 	ancestors := collectAncestorMaps(statBlock, target, rv.Parent)
 	for _, m := range ancestors {
 		replaceText(m)
