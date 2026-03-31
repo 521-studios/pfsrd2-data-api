@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,7 +121,12 @@ func TestApply_Skeleton_BoggardScout(t *testing.T) {
 	}
 
 	// Check abilities were added (via add_items)
+	// Abilities may be at defense.automatic_abilities or defense.hitpoints[0].automatic_abilities
 	autoAbilities := getStatBlockValue(t, resp.Creature, "defense", "automatic_abilities")
+	if autoAbilities == nil {
+		// Check inside hitpoints (newer template data puts abilities here)
+		autoAbilities = hpSlice[0].(map[string]any)["automatic_abilities"]
+	}
 	if autoAbilities == nil {
 		t.Fatal("expected automatic_abilities")
 	}
@@ -133,9 +139,31 @@ func TestApply_Skeleton_BoggardScout(t *testing.T) {
 			}
 		}
 	}
-	// Skeleton adds Darkvision and Negative Healing
+	// Also check special_senses (Darkvision is routed there)
+	senses := getStatBlockValue(t, resp.Creature, "senses")
+	if sensesMap, ok := senses.(map[string]any); ok {
+		if ss, ok := sensesMap["special_senses"].([]any); ok {
+			for _, s := range ss {
+				if m, ok := s.(map[string]any); ok {
+					if name, ok := m["name"].(string); ok {
+						foundAbilities[name] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Skeleton adds Darkvision (→ special_senses) and Negative Healing (→ automatic_abilities)
+	// Check case-insensitively since creature data may use different casing
 	for _, want := range []string{"Darkvision", "Negative Healing"} {
-		if !foundAbilities[want] {
+		found := false
+		for name := range foundAbilities {
+			if strings.EqualFold(name, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			t.Errorf("missing ability: %s (found: %v)", want, foundAbilities)
 		}
 	}

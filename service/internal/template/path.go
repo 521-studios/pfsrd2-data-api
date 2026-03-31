@@ -180,6 +180,64 @@ func resolveOrCreate(statBlock map[string]any, path string) []ResolvedValue {
 	return createAtLeaf(statBlock, segments, -1)
 }
 
+// resolveOrCreateConditional resolves a wildcard path but only creates the leaf
+// on elements where at least one effect's conditional passes. This prevents
+// creating empty arrays that would cause null-check conditionals to pass
+// incorrectly (e.g., creating damage:[] on abilities without damage).
+func resolveOrCreateConditional(statBlock map[string]any, path string, effects []Effect) []ResolvedValue {
+	cleanPath := strings.TrimPrefix(path, "$.")
+	segments := splitPath(cleanPath)
+	if len(segments) == 0 {
+		return nil
+	}
+
+	// Find the wildcard position to get the parent array
+	wildcardIdx := -1
+	for i, seg := range segments {
+		if seg == "[*]" {
+			wildcardIdx = i
+			break
+		}
+	}
+	if wildcardIdx < 0 {
+		// No wildcard — fall back to normal create
+		return createAtLeaf(statBlock, segments, -1)
+	}
+
+	// Resolve up to the array containing [*]
+	parentSegments := segments[:wildcardIdx]
+	var parent any = statBlock
+	for _, seg := range parentSegments {
+		if m, ok := parent.(map[string]any); ok {
+			parent = m[seg]
+		} else {
+			return nil
+		}
+	}
+
+	arr, ok := parent.([]any)
+	if !ok {
+		return nil
+	}
+
+	// For each element, check if any conditional passes, then create the leaf
+	var results []ResolvedValue
+	restSegments := segments[wildcardIdx+1:]
+	for i, elem := range arr {
+		anyMatch := false
+		for _, eff := range effects {
+			if evaluateConditional(statBlock, eff.Conditional, i) {
+				anyMatch = true
+				break
+			}
+		}
+		if anyMatch {
+			results = append(results, createAtLeaf(elem, restSegments, i)...)
+		}
+	}
+	return results
+}
+
 // createAtLeaf walks segments, creating the final segment as an empty array
 // if it doesn't exist. Handles [*] by iterating array elements.
 func createAtLeaf(current any, segments []string, arrayIdx int) []ResolvedValue {
