@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/wI2L/jsondiff"
@@ -210,7 +213,7 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 	for _, rv := range resolved {
 		for _, eff := range effects {
 			if evaluateConditional(statBlock, eff.Conditional, rv.ArrayIndex) {
-				if err := applyOperation(rv, eff); err != nil {
+				if err := applyOperation(statBlock, rv, eff); err != nil {
 					return err
 				}
 				if !accumulating {
@@ -267,7 +270,7 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	}
 
 	for _, rv := range resolved {
-		if err := applyOperation(rv, eff); err != nil {
+		if err := applyOperation(statBlock, rv, eff); err != nil {
 			return err
 		}
 	}
@@ -275,10 +278,11 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 }
 
 // applyOperation performs the actual mutation on a resolved value.
-func applyOperation(rv ResolvedValue, eff Effect) error {
+// statBlock is passed for operations that need to update ancestor text fields.
+func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) error {
 	switch eff.Operation {
 	case "adjustment":
-		return applyAdjustment(rv, eff)
+		return applyAdjustment(statBlock, rv, eff)
 	case "add_modifier":
 		return applyAddModifier(rv, eff)
 	case "add_item":
@@ -308,7 +312,8 @@ func applyOperation(rv ResolvedValue, eff Effect) error {
 
 // applyAdjustment adds a numeric value to the resolved target.
 // For arrays of numbers (like bonuses [29, 24, 19]), it adds to each element.
-func applyAdjustment(rv ResolvedValue, eff Effect) error {
+// After adjusting, updates sibling "text" fields that contain the old value.
+func applyAdjustment(statBlock map[string]any, rv ResolvedValue, eff Effect) error {
 	adj, ok := toFloat64(eff.Value)
 	if !ok {
 		return fmt.Errorf("adjustment value is not numeric: %v", eff.Value)
@@ -317,7 +322,9 @@ func applyAdjustment(rv ResolvedValue, eff Effect) error {
 	current := rv.Get()
 	switch val := current.(type) {
 	case float64:
-		rv.Set(val + adj)
+		newVal := val + adj
+		rv.Set(newVal)
+		updateSiblingText(statBlock, eff.Target, rv, val, newVal)
 	case []any:
 		// Array of numbers (e.g., bonuses [29, 24, 19])
 		for i, elem := range val {
@@ -329,6 +336,114 @@ func applyAdjustment(rv ResolvedValue, eff Effect) error {
 		return fmt.Errorf("cannot adjust non-numeric value: %T", current)
 	}
 	return nil
+}
+
+// updateSiblingText updates "text" fields in the parent map and all ancestor
+// maps when a numeric value changes. Walks the statBlock using the target path
+// to find all maps along the resolution chain and replaces the old value in
+// their text fields.
+func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue, oldVal, newVal float64) {
+	oldStr := formatNum(oldVal)
+	newStr := formatNum(newVal)
+	pattern := regexp.MustCompile(`(^|[^\d])` + regexp.QuoteMeta(oldStr) + `($|[^\d])`)
+
+	replaceText := func(m map[string]any) {
+		for key, val := range m {
+			if s, ok := val.(string); ok {
+				updated := pattern.ReplaceAllString(s, "${1}"+newStr+"${2}")
+				if updated != s {
+					m[key] = updated
+				}
+			}
+		}
+	}
+
+	// Update immediate parent
+	if parent, ok := rv.Parent.(map[string]any); ok {
+		replaceText(parent)
+	}
+
+	// Walk the target path to find ancestor maps and update their text too.
+	// e.g., for $.defense.automatic_abilities[*].saving_throw[*].dc,
+	// also update text in each automatic_abilities element (the ability).
+	ancestors := collectAncestorMaps(statBlock, target, rv.Parent)
+	for _, m := range ancestors {
+		replaceText(m)
+	}
+}
+
+// collectAncestorMaps walks a JSONPath and collects all map[string]any objects
+// encountered along the way (excluding the leaf). Used to find ability objects
+// that contain saving_throw objects whose dc was adjusted.
+func collectAncestorMaps(statBlock map[string]any, path string, parent any) []map[string]any {
+	cleanPath := strings.TrimPrefix(path, "$.")
+	segments := splitPath(cleanPath)
+	if len(segments) <= 1 {
+		return nil
+	}
+
+	// Walk the path, and for wildcards search for the element that
+	// eventually contains our target parent (by identity).
+	var result []map[string]any
+	walkAncestors(statBlock, segments[:len(segments)-1], parent, &result)
+	return result
+}
+
+// walkAncestors recursively walks path segments collecting ancestor maps.
+// For wildcards, searches each array element to find the one containing target.
+func walkAncestors(current any, segments []string, target any, ancestors *[]map[string]any) bool {
+	if len(segments) == 0 {
+		// Reached the leaf parent — check identity via pointer comparison
+		return sameMap(current, target)
+	}
+
+	seg := segments[0]
+	rest := segments[1:]
+
+	if seg == "[*]" {
+		arr, ok := current.([]any)
+		if !ok {
+			return false
+		}
+		for _, elem := range arr {
+			if m, ok := elem.(map[string]any); ok {
+				*ancestors = append(*ancestors, m)
+				if walkAncestors(elem, rest, target, ancestors) {
+					return true
+				}
+				// Not on this branch — remove the added ancestor
+				*ancestors = (*ancestors)[:len(*ancestors)-1]
+			}
+		}
+		return false
+	}
+
+	if strings.HasPrefix(seg, "[?(") {
+		return false
+	}
+
+	m, ok := current.(map[string]any)
+	if !ok {
+		return false
+	}
+	next := m[seg]
+	if nextM, ok := next.(map[string]any); ok {
+		*ancestors = append(*ancestors, nextM)
+		if walkAncestors(next, rest, target, ancestors) {
+			return true
+		}
+		*ancestors = (*ancestors)[:len(*ancestors)-1]
+	} else {
+		return walkAncestors(next, rest, target, ancestors)
+	}
+	return false
+}
+
+func formatNum(v float64) string {
+	if v == math.Trunc(v) {
+		return strconv.Itoa(int(v))
+	}
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // applyAddModifier appends a modifier object to the target array.
@@ -657,6 +772,16 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 	m["reach"] = eff.Value
 	rv.Set(m)
 	return nil
+}
+
+// sameMap checks if two values point to the same underlying map by pointer.
+func sameMap(a, b any) bool {
+	va := reflect.ValueOf(a)
+	vb := reflect.ValueOf(b)
+	if va.Kind() != reflect.Map || vb.Kind() != reflect.Map {
+		return false
+	}
+	return va.Pointer() == vb.Pointer()
 }
 
 func containsWildcard(path string) bool {
