@@ -369,6 +369,9 @@ func isKnownSpecialSense(name string) bool {
 }
 
 func abilityName(a any) string {
+	if s, ok := a.(string); ok {
+		return s
+	}
 	if m, ok := a.(map[string]any); ok {
 		if n, ok := m["name"].(string); ok {
 			return n
@@ -383,10 +386,7 @@ func abilityToSpecialSense(a any) any {
 	if !ok {
 		return a
 	}
-	ss := make(map[string]any)
-	for k, v := range m {
-		ss[k] = v
-	}
+	ss := deepCopy(m).(map[string]any)
 	ss["subtype"] = "special_sense"
 	ss["type"] = "stat_block_section"
 	delete(ss, "ability_type")
@@ -418,7 +418,7 @@ func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) er
 			if isSpecialSenses && isSense {
 				items = append(items, abilityToSpecialSense(a))
 			} else if !isSpecialSenses && !isSense {
-				items = append(items, a)
+				items = append(items, deepCopy(a))
 			}
 		}
 	}
@@ -475,10 +475,7 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 	}
 
 	if m := eff.ItemMap(); m != nil {
-		item := make(map[string]any)
-		for k, v := range m {
-			item[k] = v
-		}
+		item := deepCopy(m).(map[string]any)
 		arr = append(arr, item)
 	} else if s := eff.ItemString(); s != "" {
 		// Item is a string (e.g., spell notes like "+4 damage (Elite, limited use)")
@@ -606,10 +603,7 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 
 	if m := eff.ItemMap(); maxIdx >= 0 && m != nil {
 		// Replace the highest speed with the new item, preserving the value
-		newItem := make(map[string]any)
-		for k, v := range m {
-			newItem[k] = v
-		}
+		newItem := deepCopy(m).(map[string]any)
 		newItem["value"] = maxVal
 		// Generate the name field (e.g., "fly 35 feet")
 		if mt, ok := newItem["movement_type"].(string); ok {
