@@ -97,21 +97,23 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 // applyChange applies all effects within a single Change to the stat_block.
 // allChanges is passed for add_items operations that reference abilities across changes.
 func applyChange(statBlock map[string]any, change Change, allChanges []Change) error {
-	// Group effects by target to identify conditional chains.
-	// Effects sharing a target form a first-match chain.
+	// Group effects by target+operation to identify conditional chains.
+	// Effects sharing a target AND operation form a first-match chain.
+	// Different operations on the same target run as separate sequential steps.
 	type targetGroup struct {
 		target  string
 		effects []Effect
 	}
 
 	var groups []targetGroup
-	seen := map[string]int{} // target → index in groups
+	seen := map[string]int{} // "target\x00operation" → index in groups
 
 	for _, eff := range change.Effects {
-		if idx, ok := seen[eff.Target]; ok {
+		key := eff.Target + "\x00" + eff.Operation
+		if idx, ok := seen[key]; ok {
 			groups[idx].effects = append(groups[idx].effects, eff)
 		} else {
-			seen[eff.Target] = len(groups)
+			seen[key] = len(groups)
 			groups = append(groups, targetGroup{target: eff.Target, effects: []Effect{eff}})
 		}
 	}
@@ -186,11 +188,21 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 	}
 
 	// For add_item on missing fields within wildcard parents, create them.
-	// add_items is routed separately through applyAddItems in applyChange.
-	created := false
+	// Use conditional-aware creation when effects have non-trivial conditionals
+	// to avoid creating empty arrays that break null-check conditionals.
 	if len(resolved) == 0 && len(effects) > 0 && effects[0].Operation == "add_item" {
-		resolved = resolveOrCreate(statBlock, target)
-		created = true
+		hasConditional := false
+		for _, eff := range effects {
+			if eff.Conditional != "" && eff.Conditional != "default" {
+				hasConditional = true
+				break
+			}
+		}
+		if hasConditional {
+			resolved = resolveOrCreateConditional(statBlock, target, effects)
+		} else {
+			resolved = resolveOrCreate(statBlock, target)
+		}
 	}
 
 	accumulating := isAccumulatingOp(effects[0].Operation)
@@ -208,15 +220,12 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 		}
 	}
 
-	// Clean up empty arrays that were eagerly created but never populated
-	// (all conditional effects failed to match)
-	if created {
-		for _, rv := range resolved {
-			if arr, ok := rv.Get().([]any); ok && len(arr) == 0 {
-				if m, ok := rv.Parent.(map[string]any); ok {
-					if key, ok := rv.Key.(string); ok {
-						delete(m, key)
-					}
+	// Clean up empty arrays that were created but never populated
+	for _, rv := range resolved {
+		if arr, ok := rv.Get().([]any); ok && len(arr) == 0 {
+			if m, ok := rv.Parent.(map[string]any); ok {
+				if key, ok := rv.Key.(string); ok {
+					delete(m, key)
 				}
 			}
 		}
@@ -235,8 +244,13 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
 			return nil
 		}
-		if eff.Item != nil {
-			eff.Item["value"] = computed
+		if m := eff.ItemMap(); m != nil {
+			cp := make(map[string]any)
+			for k, v := range m {
+				cp[k] = v
+			}
+			cp["value"] = computed
+			eff.Item = cp
 		} else {
 			eff.Value = computed
 		}
@@ -279,6 +293,10 @@ func applyOperation(rv ResolvedValue, eff Effect) error {
 		return applyReplaceOneDie(rv, eff)
 	case "set_reach":
 		return applySetReach(rv, eff)
+	case "remove_all_except":
+		return applyRemoveAllExcept(rv, eff)
+	case "size_increment":
+		return nil // stub — not yet implemented
 	case "select":
 		return nil
 	case "no_op":
@@ -335,9 +353,56 @@ func applyAddModifier(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
+// knownSpecialSenses is the set of ability names that belong in special_senses
+// rather than automatic_abilities. Compared case-insensitively.
+var knownSpecialSenses = map[string]bool{
+	"darkvision":         true,
+	"greater darkvision": true,
+	"low-light vision":   true,
+	"scent":              true,
+	"tremorsense":        true,
+	"wavesense":          true,
+	"lifesense":          true,
+	"all-around vision":  true,
+	"echolocation":       true,
+	"thoughtsense":       true,
+	"motionsense":        true,
+}
+
+func isKnownSpecialSense(name string) bool {
+	return knownSpecialSenses[strings.ToLower(name)]
+}
+
+func abilityName(a any) string {
+	if s, ok := a.(string); ok {
+		return s
+	}
+	if m, ok := a.(map[string]any); ok {
+		if n, ok := m["name"].(string); ok {
+			return n
+		}
+	}
+	return ""
+}
+
+// abilityToSpecialSense converts an ability map to a special_sense map.
+func abilityToSpecialSense(a any) any {
+	m, ok := a.(map[string]any)
+	if !ok {
+		return a
+	}
+	ss := deepCopy(m).(map[string]any)
+	ss["subtype"] = "special_sense"
+	ss["type"] = "stat_block_section"
+	delete(ss, "ability_type")
+	return ss
+}
+
 // applyAddItems appends items from a source path to the target array.
 // The source is typically "$.monster_template.changes[*].abilities" — collecting
 // abilities from all changes in the template.
+// Routes abilities to the correct container: special_senses get only known senses,
+// other containers get non-sense abilities. Deduplicates by name (case-insensitive).
 func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) error {
 	// Resolve target in stat_block, creating if missing
 	resolved, err := resolvePath(statBlock, eff.Target)
@@ -348,12 +413,18 @@ func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) er
 		resolved = resolveOrCreate(statBlock, eff.Target)
 	}
 
-	// Collect items from the source — currently only
-	// "$.monster_template.changes[*].abilities" is used
+	// Collect items from the source, routing by container type
 	var items []any
+	isSpecialSenses := strings.HasSuffix(eff.Target, "special_senses")
 	for _, c := range allChanges {
 		for _, a := range c.Abilities {
-			items = append(items, a)
+			name := abilityName(a)
+			isSense := isKnownSpecialSense(name)
+			if isSpecialSenses && isSense {
+				items = append(items, abilityToSpecialSense(a))
+			} else if !isSpecialSenses && !isSense {
+				items = append(items, deepCopy(a))
+			}
 		}
 	}
 
@@ -367,18 +438,23 @@ func applyAddItems(statBlock map[string]any, eff Effect, allChanges []Change) er
 		if !ok {
 			arr = []any{}
 		}
-		arr = append(arr, items...)
+		for _, item := range items {
+			name := abilityName(item)
+			if name == "" || !arrayContainsName(arr, name) {
+				arr = append(arr, item)
+			}
+		}
 		rv.Set(arr)
 	}
 	return nil
 }
 
 // applyAddItem appends an item to the target array.
-// Deduplicates by name — if an item with the same name already exists, it is skipped.
-// Two forms:
-//   - eff.Item is set: append the item object directly
-//   - eff.Name is set and target is a string array: append the name string
-//   - eff.Name is set and target is an object array: append {name: eff.Name}
+// Deduplicates by name (case-insensitive).
+// Three forms:
+//   - eff.Item is a map: append the item object directly
+//   - eff.Item is a string: append the string directly (e.g., spell notes)
+//   - eff.Name is set: append as string or {name: eff.Name} based on array type
 func applyAddItem(rv ResolvedValue, eff Effect) error {
 	current := rv.Get()
 	arr, ok := current.([]any)
@@ -386,11 +462,11 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		arr = []any{}
 	}
 
-	// Determine the name of the item being added.
-	// Prioritize eff.Item["name"] since that's what actually gets appended.
+	// Determine the name of the item being added for dedup.
+	// Prioritize ItemMap()["name"] since that's what actually gets appended.
 	addName := ""
-	if eff.Item != nil {
-		if n, ok := eff.Item["name"].(string); ok {
+	if m := eff.ItemMap(); m != nil {
+		if n, ok := m["name"].(string); ok {
 			addName = n
 		}
 	}
@@ -398,20 +474,19 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		addName = eff.Name
 	}
 
-	// Skip if an item with this name already exists
+	// Skip if an item with this name already exists (case-insensitive)
 	if addName != "" && arrayContainsName(arr, addName) {
 		return nil
 	}
 
-	if eff.Item != nil {
-		item := make(map[string]any)
-		for k, v := range eff.Item {
-			item[k] = v
-		}
+	if m := eff.ItemMap(); m != nil {
+		item := deepCopy(m).(map[string]any)
 		arr = append(arr, item)
+	} else if s := eff.ItemString(); s != "" {
+		// Item is a string (e.g., spell notes like "+4 damage (Elite, limited use)")
+		arr = append(arr, s)
 	} else if eff.Name != "" {
 		// Determine if target is a string array or object array.
-		// creature_types is a string array; most other arrays hold objects.
 		if len(arr) > 0 {
 			if _, isStr := arr[0].(string); isStr {
 				arr = append(arr, eff.Name)
@@ -419,9 +494,6 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 				arr = append(arr, map[string]any{"name": eff.Name})
 			}
 		} else {
-			// Empty array — default to string (creature_types is the common
-			// case for name-based add_item on empty arrays; object arrays
-			// typically use the item field instead).
 			arr = append(arr, eff.Name)
 		}
 	} else {
@@ -433,16 +505,17 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 }
 
 // arrayContainsName checks if an array already contains an item with the given name.
-// Handles both string arrays and object arrays with a "name" field.
+// Comparison is case-insensitive since data may use inconsistent casing.
 func arrayContainsName(arr []any, name string) bool {
+	lower := strings.ToLower(name)
 	for _, elem := range arr {
 		switch v := elem.(type) {
 		case string:
-			if v == name {
+			if strings.ToLower(v) == lower {
 				return true
 			}
 		case map[string]any:
-			if n, ok := v["name"].(string); ok && n == name {
+			if n, ok := v["name"].(string); ok && strings.ToLower(n) == lower {
 				return true
 			}
 		}
@@ -486,6 +559,32 @@ func applyRemoveItem(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
+// applyRemoveAllExcept keeps only array items matching a field value and removes the rest.
+// Currently supports matching by movement_type (used by Ghost template to keep only fly speed).
+func applyRemoveAllExcept(rv ResolvedValue, eff Effect) error {
+	current := rv.Get()
+	arr, ok := current.([]any)
+	if !ok {
+		return nil
+	}
+
+	if eff.MovementType == "" {
+		return fmt.Errorf("remove_all_except: movement_type required")
+	}
+
+	filtered := make([]any, 0, len(arr))
+	for _, elem := range arr {
+		if m, ok := elem.(map[string]any); ok {
+			if mt, ok := m["movement_type"].(string); ok && strings.EqualFold(mt, eff.MovementType) {
+				filtered = append(filtered, elem)
+			}
+		}
+	}
+
+	rv.Set(filtered)
+	return nil
+}
+
 // applyReplaceHighestWith replaces the highest-value speed with a new movement type.
 // Used by Ghost template to replace the fastest speed with fly speed.
 func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
@@ -507,13 +606,14 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 		}
 	}
 
-	if maxIdx >= 0 && eff.Item != nil {
+	if m := eff.ItemMap(); maxIdx >= 0 && m != nil {
 		// Replace the highest speed with the new item, preserving the value
-		newItem := make(map[string]any)
-		for k, v := range eff.Item {
-			newItem[k] = v
-		}
+		newItem := deepCopy(m).(map[string]any)
 		newItem["value"] = maxVal
+		// Generate the name field (e.g., "fly 35 feet")
+		if mt, ok := newItem["movement_type"].(string); ok {
+			newItem["name"] = fmt.Sprintf("%s %d feet", mt, int(maxVal))
+		}
 		arr[maxIdx] = newItem
 		rv.Set(arr)
 	}

@@ -11,8 +11,9 @@ type TemplateJSON struct {
 
 // MonsterTemplate is the nested object containing the changes array.
 type MonsterTemplate struct {
-	Name    string   `json:"name"`
-	Changes []Change `json:"changes"`
+	Name        string   `json:"name"`
+	Changes     []Change `json:"changes"`
+	Adjustments []any    `json:"adjustments,omitempty"`
 }
 
 // Change groups related effects under a change_category with descriptive text.
@@ -24,18 +25,37 @@ type Change struct {
 }
 
 // Effect is a single conditional operation targeting a JSONPath within stat_block.
+// The Item field can be either a map (object to add) or a string (text to add).
 type Effect struct {
-	Conditional string         `json:"conditional,omitempty"`
-	Target      string         `json:"target"`
-	Operation   string         `json:"operation"`
-	Value       any            `json:"value,omitempty"`
-	Modifier    map[string]any `json:"modifier,omitempty"`
-	Item        map[string]any `json:"item,omitempty"`
-	Name        string         `json:"name,omitempty"`
-	Source      string         `json:"source,omitempty"`
-	ValueFrom   string         `json:"value_from,omitempty"`
-	Minimum     *float64       `json:"minimum,omitempty"`
-	Selection   map[string]any `json:"selection,omitempty"`
+	Conditional  string         `json:"conditional,omitempty"`
+	Target       string         `json:"target"`
+	Operation    string         `json:"operation"`
+	Value        any            `json:"value,omitempty"`
+	Modifier     map[string]any `json:"modifier,omitempty"`
+	Item         any            `json:"item,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Names        []string       `json:"names,omitempty"`
+	Source       string         `json:"source,omitempty"`
+	ValueFrom    string         `json:"value_from,omitempty"`
+	Minimum      *float64       `json:"minimum,omitempty"`
+	Selection    map[string]any `json:"selection,omitempty"`
+	MovementType string         `json:"movement_type,omitempty"`
+}
+
+// ItemMap returns the Item as a map if it is one, or nil otherwise.
+func (e Effect) ItemMap() map[string]any {
+	if m, ok := e.Item.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+// ItemString returns the Item as a string if it is one, or empty string otherwise.
+func (e Effect) ItemString() string {
+	if s, ok := e.Item.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
