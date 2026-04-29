@@ -239,7 +239,7 @@ For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the w
 
 ### What this service's terraform MUST NOT do
 
-- **Read from `infra-frontend` remote state.** This service deploys *before* `infra-frontend`, so the reverse direction is the one that works: this repo emits outputs, `infra-frontend` consumes them.
+- **Read from `infra` or `infra-frontend` remote state.** Don't read `infra` (use AWS data sources for shared primitives like Route53 zones) and don't read `infra-frontend` (this service deploys *before* it, so the dependency goes the other way: this repo emits outputs, `infra-frontend` consumes them).
 - **Embed AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
 - **Reach across into other apps' state** (e.g. another app's ALB) — apps consume shared resources via AWS data sources, not from each other's state.
 
