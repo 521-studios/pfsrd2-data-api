@@ -245,7 +245,7 @@ For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the w
 
 ### Required outputs (consumed by `infra-frontend`)
 
-These outputs are the contract with `infra-frontend` (note: this repo's `CLAUDE.md` is stale and says "consumed by infra"):
+These outputs are the contract with `infra-frontend`:
 
 | Output | Description |
 |--------|-------------|
@@ -265,10 +265,10 @@ A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exis
 1. For each `resource "aws_*"` and `module ".*"` in the diff, ask: does this belong in the app layer, or is it overreach into `infra` or `infra-frontend`?
 2. Flag any `terraform_remote_state` block reading from `infra-frontend/<env>/terraform.tfstate`.
 3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public-facing `aws_route53_record`, or VPC/subnet/cluster resources.
-4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, duplicated provider blocks.
+4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, or redundant provider blocks (e.g. multiple blocks for the same region/alias).
 5. For any change to one of the four listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).
 
-**Note:** It is acceptable to acknowledge a layering violation and defer the fix via a beads ticket — but mark it P1, not P3. Layer violations create deploy-order coupling that gets harder to untangle the longer it sits.
+Layering violations may be deferred via a P1 beads ticket, but should be flagged as they create difficult deploy-order coupling.
 
 ## clarity-reviewer
 

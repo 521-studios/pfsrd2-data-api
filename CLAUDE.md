@@ -23,7 +23,7 @@ This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda f
 
 This service does **not** read from `infra` remote state. Use AWS `data` sources to look up shared primitives by name (e.g. `data "aws_route53_zone"`).
 
-Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules.
+Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-frontend` — see workspace CLAUDE.md for the full rules.
 
 ## Terraform Outputs (consumed by infra-frontend)
 
