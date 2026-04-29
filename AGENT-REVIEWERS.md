@@ -241,7 +241,7 @@ For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the w
 
 - **Read from `infra-frontend` remote state.** This service deploys *before* `infra-frontend`, so the reverse direction is the one that works: this repo emits outputs, `infra-frontend` consumes them.
 - **Embed AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
-- **Reach across into other apps' state** (e.g. `lets-roll`'s ALB) — apps consume from `infra` and from AWS data sources, not from each other.
+- **Reach across into other apps' state** (e.g. another app's ALB) — apps consume from `infra` and from AWS data sources, not from each other.
 
 ### Required outputs (consumed by `infra-frontend`)
 
@@ -259,12 +259,12 @@ The reviewer should flag PRs that rename, remove, or change the type of any of t
 
 ### Cost discipline
 
-A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exist. Before suggesting this service should own its own distribution, ask whether a path behavior on the existing `pfsrd2-display-cf` distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
+A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exist. Before suggesting this service should own its own distribution, ask whether a path behavior on the existing frontend distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
 
 ### Review approach
 
 1. For each `resource "aws_*"` and `module ".*"` in the diff, ask: does this belong in the app layer, or is it overreach into `infra` or `infra-frontend`?
-2. Flag any `terraform_remote_state` block reading from `infra-frontend/<env>/terraform.tfstate`.
+2. Flag any `terraform_remote_state` block reading from `infra` or `infra-frontend` remote state (e.g. `infra-frontend/<env>/terraform.tfstate`).
 3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public-facing `aws_route53_record`, or VPC/subnet/cluster resources.
 4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, or redundant provider blocks (e.g. multiple blocks for the same region/alias).
 5. For any change to one of the listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).

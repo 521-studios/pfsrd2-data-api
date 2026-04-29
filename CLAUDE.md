@@ -21,7 +21,7 @@ docker compose up
 
 This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs.
 
-This service does **not** read from `infra` remote state. Use AWS `data` sources to look up shared primitives by name (e.g. `data "aws_route53_zone"`).
+This service does **not** read from `infra` or `infra-frontend` remote state. Use AWS `data` sources to look up shared primitives by name (e.g. `data "aws_route53_zone"`).
 
 Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-frontend` — see workspace CLAUDE.md for the full rules.
 
