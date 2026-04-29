@@ -21,16 +21,17 @@ docker compose up
 
 This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs.
 
-This service does **not** read from `infra` remote state. Use AWS `data` sources to look up shared primitives by name (e.g. `data "aws_route53_zone"`).
+This service does **not** read from `infra` or `infra-frontend` remote state. Use AWS `data` sources to look up shared primitives by name (e.g. `data "aws_route53_zone"`).
 
-Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules.
+Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-frontend` — see workspace CLAUDE.md for the full rules.
 
-## Terraform Outputs (consumed by infra)
+## Terraform Outputs (consumed by infra-frontend)
 
 | Output | Description |
 |--------|-------------|
 | `lambda_function_url` | Lambda Function URL — CloudFront API origin |
-| `s3_bucket_name` | Data bucket name — CloudFront images origin |
+| `s3_bucket_name` | Data bucket name |
+| `s3_bucket_regional_domain` | S3 regional domain — CloudFront images origin |
 | `s3_bucket_arn` | Data bucket ARN |
 | `indexer_iam_policy_arn` | IAM policy for pfsrd2-parser to write to S3 |
 
