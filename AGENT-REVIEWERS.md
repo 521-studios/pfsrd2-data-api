@@ -220,7 +220,7 @@ infra (baseline) → apps (this repo) → infra-frontend
 
 **This repo's layer: apps.** Its terraform owns service-specific resources only. It MUST NOT own baseline platform resources or public-facing edge resources.
 
-For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules."* (The "owned by `infra`" phrasing there is slightly stale — public-edge ownership now lives in `infra-frontend`. The reviewer should still enforce that those resources don't appear in this repo regardless.)
+For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. If these files are not available, rely on the rules documented in the sections below, which are self-contained. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules."* (The "owned by `infra`" phrasing there is slightly stale — public-edge ownership now lives in `infra-frontend`. The reviewer should still enforce that those resources don't appear in this repo regardless.)
 
 ### What this service's terraform SHOULD own
 
@@ -245,7 +245,7 @@ For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the w
 
 ### Required outputs (consumed by `infra-frontend`)
 
-Per this repo's CLAUDE.md, these outputs are the contract with `infra-frontend`:
+These outputs are the contract with `infra-frontend` (note: this repo's `CLAUDE.md` is stale and says "consumed by infra"):
 
 | Output | Description |
 |--------|-------------|

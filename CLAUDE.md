@@ -25,7 +25,7 @@ This service does **not** read from `infra` remote state. Use AWS `data` sources
 
 Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules.
 
-## Terraform Outputs (consumed by infra)
+## Terraform Outputs (consumed by infra-frontend)
 
 | Output | Description |
 |--------|-------------|
