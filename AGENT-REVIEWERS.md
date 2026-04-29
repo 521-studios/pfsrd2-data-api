@@ -241,7 +241,7 @@ For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the w
 
 - **Read from `infra-frontend` remote state.** This service deploys *before* `infra-frontend`, so the reverse direction is the one that works: this repo emits outputs, `infra-frontend` consumes them.
 - **Embed AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
-- **Reach across into other apps' state** (e.g. another app's ALB) — apps consume from `infra` and from AWS data sources, not from each other.
+- **Reach across into other apps' state** (e.g. another app's ALB) — apps consume shared resources via AWS data sources, not from each other's state.
 
 ### Required outputs (consumed by `infra-frontend`)
 
@@ -259,7 +259,7 @@ The reviewer should flag PRs that rename, remove, or change the type of any of t
 
 ### Cost discipline
 
-A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exist. Before suggesting this service should own its own distribution, ask whether a path behavior on the existing frontend distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
+A new CloudFront distribution + ACM cert adds architectural complexity and potential Route 53 costs (~$0.50/month). Before suggesting this service should own its own distribution, ask whether a path behavior on the existing frontend distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
 
 ### Review approach
 
