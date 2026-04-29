@@ -220,7 +220,7 @@ infra (baseline) → apps (this repo) → infra-frontend
 
 **This repo's layer: apps.** Its terraform owns service-specific resources only. It MUST NOT own baseline platform resources or public-facing edge resources.
 
-For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. If these files are not available, rely on the rules documented in the sections below, which are self-contained. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules."* (The "owned by `infra`" phrasing there is slightly stale — public-edge ownership now lives in `infra-frontend`. The reviewer should still enforce that those resources don't appear in this repo regardless.)
+For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. If these files are not available, rely on the rules documented in the sections below, which are self-contained. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-frontend` — see workspace CLAUDE.md for the full rules."*
 
 ### What this service's terraform SHOULD own
 
@@ -250,7 +250,8 @@ These outputs are the contract with `infra-frontend`:
 | Output | Description |
 |--------|-------------|
 | `lambda_function_url` | Lambda Function URL — the CloudFront API origin |
-| `s3_bucket_name` | Data bucket name — the CloudFront images origin |
+| `s3_bucket_name` | Data bucket name |
+| `s3_bucket_regional_domain` | S3 regional domain — the CloudFront images origin |
 | `s3_bucket_arn` | Data bucket ARN |
 | `indexer_iam_policy_arn` | IAM policy for `pfsrd2-parser` to write to S3 |
 
@@ -266,7 +267,7 @@ A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exis
 2. Flag any `terraform_remote_state` block reading from `infra-frontend/<env>/terraform.tfstate`.
 3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public-facing `aws_route53_record`, or VPC/subnet/cluster resources.
 4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, or redundant provider blocks (e.g. multiple blocks for the same region/alias).
-5. For any change to one of the four listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).
+5. For any change to one of the listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).
 
 Layering violations may be deferred via a P1 beads ticket, but should be flagged as they create difficult deploy-order coupling.
 

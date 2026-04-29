@@ -30,7 +30,8 @@ Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-f
 | Output | Description |
 |--------|-------------|
 | `lambda_function_url` | Lambda Function URL — CloudFront API origin |
-| `s3_bucket_name` | Data bucket name — CloudFront images origin |
+| `s3_bucket_name` | Data bucket name |
+| `s3_bucket_regional_domain` | S3 regional domain — CloudFront images origin |
 | `s3_bucket_arn` | Data bucket ARN |
 | `indexer_iam_policy_arn` | IAM policy for pfsrd2-parser to write to S3 |
 
