@@ -210,6 +210,66 @@ Review Go code for **SQL injection vulnerabilities**. All database queries must 
 3. Verify all user-supplied values go through `?` placeholders
 4. Check that `fmt.Sprintf` in queries is only used for structural elements (column names, table names, WHERE clause assembly) — never for values
 
+## terraform-reviewer
+
+Review terraform changes in `terraform/` to ensure this service stays in its lane within the **three-layer state stack**:
+
+```
+infra (baseline) → apps (this repo) → infra-frontend
+```
+
+**This repo's layer: apps.** Its terraform owns service-specific resources only. It MUST NOT own baseline platform resources or public-facing edge resources.
+
+For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra` — see workspace CLAUDE.md for the full rules."* (The "owned by `infra`" phrasing there is slightly stale — public-edge ownership now lives in `infra-frontend`. The reviewer should still enforce that those resources don't appear in this repo regardless.)
+
+### What this service's terraform SHOULD own
+
+- The Lambda function + Function URL (consumed by `infra-frontend` as a CloudFront origin).
+- The S3 data bucket (`db/`, `json/`, `images/` prefixes).
+- IAM roles/policies the Lambda executes under, plus the indexer policy that `pfsrd2-parser` consumes.
+- CloudWatch log groups for the Lambda.
+
+### What this service's terraform MUST NOT own
+
+- **CloudFront distributions** — owned by `infra-frontend`.
+- **ACM certificates** for public domains — owned by `infra-frontend` (must live in `us-east-1`).
+- **Public DNS records** — owned by `infra-frontend`.
+- **CloudFront Functions** — owned by `infra-frontend`.
+- **Foundational shared resources** (VPC, ECS cluster, Aurora) — owned by `infra`.
+
+### What this service's terraform MUST NOT do
+
+- **Read from `infra-frontend` remote state.** This service deploys *before* `infra-frontend`, so the reverse direction is the one that works: this repo emits outputs, `infra-frontend` consumes them.
+- **Embed AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
+- **Reach across into other apps' state** (e.g. `lets-roll`'s ALB) — apps consume from `infra` and from AWS data sources, not from each other.
+
+### Required outputs (consumed by `infra-frontend`)
+
+Per this repo's CLAUDE.md, these outputs are the contract with `infra-frontend`:
+
+| Output | Description |
+|--------|-------------|
+| `lambda_function_url` | Lambda Function URL — the CloudFront API origin |
+| `s3_bucket_name` | Data bucket name — the CloudFront images origin |
+| `s3_bucket_arn` | Data bucket ARN |
+| `indexer_iam_policy_arn` | IAM policy for `pfsrd2-parser` to write to S3 |
+
+The reviewer should flag PRs that rename, remove, or change the type of any of these without coordinating an `infra-frontend` change in the same PR or a clear follow-up.
+
+### Cost discipline
+
+A new CloudFront distribution + ACM cert costs ~$0.60/month minimum just to exist. Before suggesting this service should own its own distribution, ask whether a path behavior on the existing `pfsrd2-display-cf` distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
+
+### Review approach
+
+1. For each `resource "aws_*"` and `module ".*"` in the diff, ask: does this belong in the app layer, or is it overreach into `infra` or `infra-frontend`?
+2. Flag any `terraform_remote_state` block reading from `infra-frontend/<env>/terraform.tfstate`.
+3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public-facing `aws_route53_record`, or VPC/subnet/cluster resources.
+4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, duplicated provider blocks.
+5. For any change to one of the four listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).
+
+**Note:** It is acceptable to acknowledge a layering violation and defer the fix via a beads ticket — but mark it P1, not P3. Layer violations create deploy-order coupling that gets harder to untangle the longer it sits.
+
 ## clarity-reviewer
 
 Review markdown documentation for terseness. Every token costs money and attention — cut the fat.
