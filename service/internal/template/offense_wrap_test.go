@@ -300,12 +300,19 @@ func TestValueFromSentinelProducers(t *testing.T) {
 		{"$.offense.offensive_actions[?(@.name=='x')].attack.damage[0].formula / 2", ErrValueFromPath}, // single missing
 		{"$.creature_type.level | high_for_level", ErrValueFromShape},                                  // non-numeric level
 		{"$.statistics.skills[*].value | max / 2", ErrValueFromPath},                                   // division over empty
+		{"$.creature_type.level / 2", ErrValueFromShape},                                               // single-path non-numeric
 	}
 	for i, c := range cases {
 		_, err := evaluateValueFrom(sb, c.expr, nil)
 		if !errorsIs(err, c.want) {
 			t.Errorf("case %d (%s): got %v want sentinel %v", i, c.expr, err, c.want)
 		}
+	}
+	// missing creature level needs its own fixture: the shared one has a
+	// (non-numeric) level, which is the shape case, not the path case
+	_, err := evaluateValueFrom(map[string]any{}, "$.creature_type.level | high_for_level", nil)
+	if !errorsIs(err, ErrValueFromPath) {
+		t.Errorf("missing level: got %v want path sentinel", err)
 	}
 }
 
