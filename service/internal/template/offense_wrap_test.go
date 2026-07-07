@@ -1,10 +1,13 @@
 package template
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func errorsIs(err, target error) bool { return errors.Is(err, target) }
 
 func TestAddItems_OffensiveAbilityGetsWrapped(t *testing.T) {
 	// Plain abilities appended to offensive_actions must take the wrapper
@@ -231,6 +234,98 @@ func TestValueFromAggregateWithDivision(t *testing.T) {
 	got, err = evaluateValueFrom(sb, "$.offense.speed.movement[*].value | max / 2", min)
 	if err != nil || got != float64(30) {
 		t.Errorf("minimum not applied: got %v err %v", got, err)
+	}
+}
+
+func TestValueFromSingleDivisionFloorsToFive(t *testing.T) {
+	// 35 / 2 = 17.5 -> 15 under the PF2 halved-Speed convention.
+	sb := map[string]any{
+		"offense": map[string]any{"speed": map[string]any{"movement": []any{
+			map[string]any{"movement_type": "walk", "value": float64(35)},
+		}}},
+	}
+	got, err := evaluateValueFrom(sb, "$.offense.speed.movement[?(@.movement_type=='walk')].value / 2", nil)
+	if err != nil || got != float64(15) {
+		t.Errorf("got %v err %v want 15", got, err)
+	}
+}
+
+func TestValueFromMinimumOnNonDivisionForms(t *testing.T) {
+	sb := map[string]any{
+		"statistics": map[string]any{"skills": []any{
+			map[string]any{"name": "Stealth", "value": float64(4)},
+		}},
+		"creature_type": map[string]any{"level": float64(2)},
+	}
+	min := floatPtr(9)
+	got, err := evaluateValueFrom(sb, "$.statistics.skills[*].value | max", min)
+	if err != nil || got != float64(9) {
+		t.Errorf("aggregate minimum: got %v err %v want 9", got, err)
+	}
+	got, err = evaluateValueFrom(sb, "$.creature_type.level", min)
+	if err != nil || got != float64(9) {
+		t.Errorf("plain-path minimum: got %v err %v want 9", got, err)
+	}
+}
+
+func TestValueFromPlainPath(t *testing.T) {
+	sb := map[string]any{"creature_type": map[string]any{"level": float64(7), "size": "Large"}}
+	if got, err := evaluateValueFrom(sb, "$.creature_type.level", nil); err != nil || got != float64(7) {
+		t.Errorf("numeric: got %v err %v", got, err)
+	}
+	if got, err := evaluateValueFrom(sb, "$.creature_type.size", nil); err != nil || got != "Large" {
+		t.Errorf("non-numeric passthrough: got %v err %v", got, err)
+	}
+	_, err := evaluateValueFrom(sb, "$.creature_type.missing", nil)
+	if !errorsIs(err, ErrValueFromPath) {
+		t.Errorf("missing path should be sentinel, got %v", err)
+	}
+}
+
+func TestValueFromSentinelProducers(t *testing.T) {
+	sb := map[string]any{
+		"offense": map[string]any{"offensive_actions": []any{
+			map[string]any{"attack": map[string]any{"damage": []any{
+				map[string]any{"formula": "1d6", "damage_type": "piercing"},
+			}}},
+		}},
+		"creature_type": map[string]any{"level": "seven"},
+	}
+	cases := []struct {
+		expr string
+		want error
+	}{
+		{"$.statistics.skills[*].value | max", ErrValueFromPath},                                       // aggregate empty
+		{"$.offense.offensive_actions[*].attack.damage | min", ErrValueFromShape},                      // dicts, not numbers
+		{"$.offense.offensive_actions[?(@.name=='x')].attack.damage[0].formula / 2", ErrValueFromPath}, // single missing
+		{"$.creature_type.level | high_for_level", ErrValueFromShape},                                  // non-numeric level
+		{"$.statistics.skills[*].value | max / 2", ErrValueFromPath},                                   // division over empty
+	}
+	for i, c := range cases {
+		_, err := evaluateValueFrom(sb, c.expr, nil)
+		if !errorsIs(err, c.want) {
+			t.Errorf("case %d (%s): got %v want sentinel %v", i, c.expr, err, c.want)
+		}
+	}
+}
+
+func TestSetReach_NeverRaisesReach(t *testing.T) {
+	sb := map[string]any{
+		"offense": map[string]any{"offensive_actions": []any{
+			map[string]any{"name": "Melee", "attack": map[string]any{
+				"attack_type": "melee",
+				"traits": []any{map[string]any{"name": "Reach", "value": "0 feet",
+					"type": "stat_block_section"}},
+			}},
+		}},
+	}
+	eff := Effect{Operation: "set_reach", Target: "$.offense.offensive_actions[*].attack", Value: float64(5)}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	tr := sb["offense"].(map[string]any)["offensive_actions"].([]any)[0].(map[string]any)["attack"].(map[string]any)["traits"].([]any)[0].(map[string]any)
+	if tr["value"] != "0 feet" {
+		t.Errorf("reach was raised: %v", tr["value"])
 	}
 }
 

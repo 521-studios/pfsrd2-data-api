@@ -9,9 +9,17 @@ import (
 
 // ErrValueFromPath marks value_from failures caused by the creature lacking
 // the referenced data (a swim-only creature has no walk speed). Callers skip
-// these; every other value_from error is a malformed template and must
-// propagate.
+// these silently; every unmarked value_from error is a malformed template
+// expression and must propagate.
 var ErrValueFromPath = errors.New("value_from path unavailable")
+
+// ErrValueFromShape marks failures where the path resolved but the values
+// have the wrong shape (non-numeric where a number is required). These are
+// template/schema mismatches, not per-creature gaps — callers skip them but
+// warn loudly. Known producers (the attack.damage | min expressions in
+// dwarf/kholo/ratfolk/vampire) are tracked for data fixes; once the corpus
+// is clean this class should become a hard error.
+var ErrValueFromShape = errors.New("value_from values have wrong shape")
 
 // evaluateValueFrom resolves a value_from expression against the stat_block.
 // Supported forms:
@@ -134,7 +142,7 @@ func resolveAggregate(statBlock map[string]any, path string, fn func(float64, fl
 		}
 	}
 	if first {
-		return 0, fmt.Errorf("%w: no numeric values at %q", ErrValueFromPath, path)
+		return 0, fmt.Errorf("%w: no numeric values at %q", ErrValueFromShape, path)
 	}
 	return result, nil
 }
@@ -149,7 +157,7 @@ func resolveSingleNumeric(statBlock map[string]any, path string) (float64, error
 	}
 	v, ok := toFloat64(resolved[0].Get())
 	if !ok {
-		return 0, fmt.Errorf("%w: non-numeric value at %q", ErrValueFromPath, path)
+		return 0, fmt.Errorf("%w: non-numeric value at %q", ErrValueFromShape, path)
 	}
 	return v, nil
 }
@@ -164,7 +172,7 @@ func resolveHighForLevel(statBlock map[string]any, _ string) (float64, error) {
 	}
 	lvl, ok := toFloat64(level)
 	if !ok {
-		return 0, fmt.Errorf("creature level is not numeric")
+		return 0, fmt.Errorf("%w: creature level is not numeric (%T: %v)", ErrValueFromShape, level, level)
 	}
 
 	// PF2e building rules: high skill modifier by level

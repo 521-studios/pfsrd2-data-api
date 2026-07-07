@@ -434,6 +434,12 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
 			return nil
 		}
+		if errors.Is(err, ErrValueFromShape) {
+			// Template/schema mismatch: skip the effect but say so loudly —
+			// this hides a template bug, not a creature quirk
+			slog.Warn("value_from shape mismatch, effect skipped", "expr", eff.ValueFrom, "err", err)
+			return nil
+		}
 		if err != nil {
 			// Malformed template expression — surface it, don't skip
 			return fmt.Errorf("value_from %q: %w", eff.ValueFrom, err)
@@ -1181,9 +1187,19 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 	feet := fmt.Sprintf("%d feet", int(v))
 	traits, _ := attack["traits"].([]any)
 	for _, tr := range traits {
-		if m, ok := tr.(map[string]any); ok && m["name"] == "Reach" {
-			m["value"] = feet
+		m, ok := tr.(map[string]any)
+		if !ok || m["name"] != "Reach" {
+			continue
 		}
+		// set_reach only ever reduces: a Tiny creature's existing
+		// "Reach 0 feet" must not be raised to 5.
+		if old, okOld := m["value"].(string); okOld {
+			var oldFeet int
+			if _, err := fmt.Sscanf(old, "%d", &oldFeet); err == nil && oldFeet <= int(v) {
+				continue
+			}
+		}
+		m["value"] = feet
 	}
 	return nil
 }
