@@ -3,6 +3,7 @@ package template
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -717,6 +718,26 @@ func TestAddItems_CategorylessKnownSenseDiverts(t *testing.T) {
 	}
 	if auto := sb["defense"].(map[string]any)["automatic_abilities"]; auto != nil {
 		t.Errorf("automatic_abilities should be empty, got %v", auto)
+	}
+}
+
+func TestAddItems_ItemCarryingErrorNamesAbility(t *testing.T) {
+	// The Item-carrying error-identity arm: failures on synthesized effects
+	// name the ability, not an empty source.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Item:      ability("Slow", "automatic"),
+				Target:    "$.stat_block.interaction_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	_, err := Apply(creature, tmpl)
+	if err == nil || !strings.Contains(err.Error(), "ability Slow") {
+		t.Errorf("error should name the carried ability, got: %v", err)
 	}
 }
 
