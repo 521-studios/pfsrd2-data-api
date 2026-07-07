@@ -496,6 +496,8 @@ func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) erro
 		return applyReplaceOneDie(rv, eff)
 	case "set_reach":
 		return applySetReach(rv, eff)
+	case "add_strike":
+		return applyAddStrike(rv, eff)
 	case "remove_all_except":
 		return applyRemoveAllExcept(rv, eff)
 	case "size_increment":
@@ -1201,6 +1203,138 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 		}
 		m["value"] = feet
 	}
+	return nil
+}
+
+// averageDamage returns the expected value of a dice formula ("2d8+4" →
+// 13); flat numbers return themselves, unparseable formulas return -1 so
+// they never win the lowest-strike comparison... but also never block it.
+func averageDamage(formula string) float64 {
+	if g := diceFormula.FindStringSubmatch(formula); g != nil {
+		n, _ := strconv.Atoi(g[1])
+		die, _ := strconv.Atoi(g[2])
+		mod := 0
+		if g[3] != "" {
+			mod, _ = strconv.Atoi(g[3])
+		}
+		return float64(n)*(float64(die)+1)/2 + float64(mod)
+	}
+	if v, err := strconv.Atoi(formula); err == nil {
+		return float64(v)
+	}
+	return -1
+}
+
+// lowestMeleeStrike returns the wrapper of the melee attack with the lowest
+// first-damage-entry average, or nil when the creature has no melee Strikes.
+func lowestMeleeStrike(actions []any) map[string]any {
+	var best map[string]any
+	bestAvg := 0.0
+	for _, a := range actions {
+		w, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		atk, ok := w["attack"].(map[string]any)
+		if !ok || atk["attack_type"] != "melee" {
+			continue
+		}
+		dmg, _ := atk["damage"].([]any)
+		if len(dmg) == 0 {
+			continue
+		}
+		first, _ := dmg[0].(map[string]any)
+		f, _ := first["formula"].(string)
+		avg := averageDamage(f)
+		if avg < 0 {
+			continue
+		}
+		if best == nil || avg < bestAvg {
+			best, bestAvg = w, avg
+		}
+	}
+	return best
+}
+
+// hasWeapon reports whether any attack in actions uses one of the weapons
+// (case-insensitive).
+func hasWeapon(actions []any, weapons []string) bool {
+	for _, a := range actions {
+		w, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if atk, ok := w["attack"].(map[string]any); ok {
+			if wp, _ := atk["weapon"].(string); wp != "" {
+				for _, want := range weapons {
+					if strings.EqualFold(wp, want) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// applyAddStrike adds a natural Strike derived from the creature's lowest
+// melee Strike (the NPC Core "jaws Strike... deals damage equal to the
+// creature's lowest melee Strike" pattern, also tengu's beak and vampire's
+// fangs). Item carries the config: weapon (required), damage_type, traits
+// (replacing the source strike's — a natural attack doesn't inherit weapon
+// properties), and skip_if_weapons for the vampire-style dedup. Creatures
+// with no melee Strike are skipped: there is nothing to derive from.
+func applyAddStrike(rv ResolvedValue, eff Effect) error {
+	cfg := eff.ItemMap()
+	if cfg == nil {
+		return fmt.Errorf("add_strike requires an item config")
+	}
+	weapon, _ := cfg["weapon"].(string)
+	if weapon == "" {
+		return fmt.Errorf("add_strike: item.weapon is required")
+	}
+	actions, ok := rv.Get().([]any)
+	if !ok {
+		return nil
+	}
+
+	skip := []string{weapon}
+	if raw, ok := cfg["skip_if_weapons"].([]any); ok {
+		for _, w := range raw {
+			if s, ok := w.(string); ok {
+				skip = append(skip, s)
+			}
+		}
+	}
+	if hasWeapon(actions, skip) {
+		return nil
+	}
+	source := lowestMeleeStrike(actions)
+	if source == nil {
+		slog.Warn("add_strike skipped: creature has no melee Strike", "weapon", weapon)
+		return nil
+	}
+
+	wrapper := deepCopy(source).(map[string]any)
+	atk := wrapper["attack"].(map[string]any)
+	atk["weapon"] = weapon
+	traits := []any{}
+	if raw, ok := cfg["traits"].([]any); ok {
+		for _, tr := range raw {
+			if name, ok := tr.(string); ok {
+				traits = append(traits, map[string]any{"name": name, "type": "stat_block_section"})
+			}
+		}
+	}
+	atk["traits"] = traits
+	if dt, _ := cfg["damage_type"].(string); dt != "" {
+		if dmg, ok := atk["damage"].([]any); ok && len(dmg) > 0 {
+			if first, ok := dmg[0].(map[string]any); ok {
+				first["damage_type"] = dt
+			}
+		}
+	}
+	rv.Set(append(actions, wrapper))
 	return nil
 }
 
