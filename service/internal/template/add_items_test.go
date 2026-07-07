@@ -546,6 +546,8 @@ func TestEffectConsumption(t *testing.T) {
 		{Effect{Source: "$.changes[*].abilities[?(@.name=='Stalk')]"}, "Stalk", false, false},
 		{Effect{Source: "$.changes[*].abilities", Target: "$.senses.special_senses"}, "", false, true},
 		{Effect{Source: "$.changes[*].abilities", Target: "$.defense.automatic_abilities"}, "", true, false},
+		{Effect{Source: `$.changes[*].abilities[?(@.name=="bad quotes")]`}, "", false, false},
+		{Effect{}, "", false, false},
 	}
 	for i, c := range cases {
 		name, all, sense := effectConsumption(c.eff)
@@ -645,6 +647,76 @@ func TestAddItems_UnresolvableTargetErrors(t *testing.T) {
 	creature := map[string]any{"stat_block": baseStatBlock()}
 	if _, err := Apply(creature, tmpl); err == nil {
 		t.Error("expected error for unresolvable add_items target")
+	}
+}
+
+func TestAddItems_EmptySourceErrors(t *testing.T) {
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Orphan", "automatic")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Error("expected error for add_items with neither item nor source")
+	}
+}
+
+func TestApplyChange_NonAddItemsErrorPropagates(t *testing.T) {
+	// The non-add_items propagation arm: a replace with an empty target
+	// surfaces resolvePath's error through applyChange and Apply.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "defense",
+			Effects:        []Effect{{Operation: "replace", Target: "", Value: float64(1)}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Error("expected resolve error to propagate for non-add_items effect")
+	}
+}
+
+func TestSetMovementName_NonNumericComputedNoOp(t *testing.T) {
+	item := map[string]any{"movement_type": "swim", "name": "swim"}
+	setMovementName(item, "not a number")
+	if item["name"] != "swim" {
+		t.Errorf("name should be untouched for non-numeric computed, got %v", item["name"])
+	}
+}
+
+func TestAddItems_CategorylessKnownSenseDiverts(t *testing.T) {
+	// isSenseAbility's name-list fallback: a category-less Darkvision on the
+	// unfiltered path must still divert to special_senses.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities: []any{map[string]any{
+				"name": "Darkvision", "type": "stat_block_section"}},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Darkvision"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	if auto := sb["defense"].(map[string]any)["automatic_abilities"]; auto != nil {
+		t.Errorf("automatic_abilities should be empty, got %v", auto)
 	}
 }
 

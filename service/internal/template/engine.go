@@ -196,6 +196,9 @@ func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
 	if eff.Item != nil {
 		return abilityName(eff.Item), false, false
 	}
+	if eff.Source == "" {
+		return "", false, false
+	}
 	if strings.Contains(eff.Source, "[?(") {
 		if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
 			return m[1], false, false
@@ -282,8 +285,12 @@ func applyChange(statBlock map[string]any, change Change, pool []any) error {
 		if effects[0].Operation == "add_items" {
 			for _, eff := range effects {
 				if err := applyAddItems(statBlock, eff, pool); err != nil {
-					return fmt.Errorf("add_items (source %q, target %q): %w",
-						eff.Source, eff.Target, err)
+					ident := eff.Source
+					if eff.Item != nil {
+						ident = "ability " + abilityName(eff.Item)
+					}
+					return fmt.Errorf("add_items (%s, target %q): %w",
+						ident, eff.Target, err)
 				}
 			}
 			continue
@@ -768,6 +775,9 @@ func unfilteredPoolItems(pool []any, target string) map[string][]any {
 func collectPoolItems(eff Effect, pool []any) (map[string][]any, error) {
 	if eff.Item != nil {
 		return map[string][]any{eff.Target: {itemForTarget(eff.Item, eff.Target)}}, nil
+	}
+	if eff.Source == "" {
+		return nil, fmt.Errorf("add_items effect has neither item nor source")
 	}
 	if strings.Contains(eff.Source, "[?(") {
 		m := sourceNameFilter.FindStringSubmatch(eff.Source)
