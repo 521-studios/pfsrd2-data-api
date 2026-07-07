@@ -64,6 +64,9 @@ func TestAddStrike_CopiesLowestMeleeStrike(t *testing.T) {
 	if dmg["formula"] != "1d4+2" || dmg["damage_type"] != "piercing" {
 		t.Errorf("damage = %#v", dmg)
 	}
+	if _, has := dmg["persistent"]; has {
+		t.Errorf("non-persistent source must not produce a persistent entry")
+	}
 	// bonus copied from the source strike
 	if b := atk["bonus"].(map[string]any)["bonuses"].([]any)[0]; b != float64(15) {
 		t.Errorf("bonus = %v", b)
