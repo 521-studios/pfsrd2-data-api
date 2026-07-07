@@ -1258,9 +1258,33 @@ func lowestMeleeStrike(actions []any) map[string]any {
 	return best
 }
 
-// hasWeapon reports whether any attack in actions uses one of the weapons,
-// matching whole words case-insensitively — a creature with "snake fangs"
-// or "dragon jaws" already has fangs/jaws for dedup purposes.
+// weaponContains reports whether weapon wp contains want as a contiguous
+// word sequence, case-insensitively: "snake fangs" contains "fangs",
+// "+1 clan dagger" contains "clan dagger".
+func weaponContains(wp, want string) bool {
+	wpWords := strings.Fields(strings.ToLower(wp))
+	wantWords := strings.Fields(strings.ToLower(want))
+	if len(wantWords) == 0 || len(wpWords) < len(wantWords) {
+		return false
+	}
+	for i := 0; i+len(wantWords) <= len(wpWords); i++ {
+		match := true
+		for j := range wantWords {
+			if wpWords[i+j] != wantWords[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWeapon reports whether any attack in actions uses one of the weapons —
+// a creature with "snake fangs" or "+1 clan dagger" already has fangs /
+// a clan dagger for dedup purposes.
 func hasWeapon(actions []any, weapons []string) bool {
 	for _, a := range actions {
 		w, ok := a.(map[string]any)
@@ -1272,11 +1296,9 @@ func hasWeapon(actions []any, weapons []string) bool {
 			continue
 		}
 		wp, _ := atk["weapon"].(string)
-		for _, word := range strings.Fields(wp) {
-			for _, want := range weapons {
-				if strings.EqualFold(word, want) {
-					return true
-				}
+		for _, want := range weapons {
+			if weaponContains(wp, want) {
+				return true
 			}
 		}
 	}
@@ -1338,6 +1360,10 @@ func applyAddStrike(rv ResolvedValue, eff Effect) error {
 		"formula":     srcFirst["formula"],
 		"subtype":     "attack_damage",
 		"type":        "stat_block_section",
+	}
+	if p, _ := srcFirst["persistent"].(bool); p {
+		// persistent is a property of the copied primary damage, not a rider
+		entry["persistent"] = true
 	}
 	if dt, _ := cfg["damage_type"].(string); dt != "" {
 		entry["damage_type"] = dt

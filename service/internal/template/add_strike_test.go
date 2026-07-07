@@ -237,6 +237,36 @@ func TestAddStrike_NilConfigErrors(t *testing.T) {
 	}
 }
 
+func TestAddStrike_MultiWordWeaponDedup(t *testing.T) {
+	// "clan dagger" and "+1 clan dagger" both already count as a clan
+	// dagger; word-subsequence matching, case-insensitive.
+	for _, existing := range []string{"clan dagger", "+1 Clan Dagger"} {
+		sb := strikeStatBlock(meleeWrapper(existing, "1d4+2", "piercing", 8))
+		applyStrike(t, sb, map[string]any{"weapon": "clan dagger", "damage_type": "piercing"})
+		oa := sb["offense"].(map[string]any)["offensive_actions"].([]any)
+		if len(oa) != 1 {
+			t.Errorf("%q: dedup failed, %d actions", existing, len(oa))
+		}
+	}
+	// but "daggerfish" does not contain "dagger" as a word
+	sb := strikeStatBlock(meleeWrapper("daggerfish tail", "1d4+2", "bludgeoning", 8))
+	applyStrike(t, sb, map[string]any{"weapon": "dagger", "damage_type": "piercing"})
+	if oa := sb["offense"].(map[string]any)["offensive_actions"].([]any); len(oa) != 2 {
+		t.Errorf("substring should not dedup, got %d actions", len(oa))
+	}
+}
+
+func TestAddStrike_PersistentPrimaryCarries(t *testing.T) {
+	w := meleeWrapper("tendril", "4d12+13", "piercing", 20)
+	w["attack"].(map[string]any)["damage"].([]any)[0].(map[string]any)["persistent"] = true
+	sb := strikeStatBlock(w)
+	applyStrike(t, sb, map[string]any{"weapon": "jaws"})
+	got := lastAttack(t, sb)["damage"].([]any)[0].(map[string]any)
+	if got["persistent"] != true {
+		t.Errorf("persistent dropped: %#v", got)
+	}
+}
+
 func TestAverageDamage(t *testing.T) {
 	cases := []struct {
 		formula string
