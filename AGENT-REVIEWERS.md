@@ -1,68 +1,92 @@
+# Configuration
+
+```json
+{
+  "defaults_version_checked": "1.3.0",
+  "disabled": [
+    "silent-failure-hunter",
+    "comment-analyzer",
+    "code-simplifier"
+  ],
+  "overlap_acknowledged": {
+    "test-coverage-reviewer": {
+      "overlaps_with": "pr-test-analyzer",
+      "reason": "Different lenses: test-coverage-reviewer enforces hard rules (touched code must be covered; new branches must be asserted). pr-test-analyzer scores behavioral gaps on a criticality 1-10 axis. Both contribute independent signal during review loops."
+    }
+  }
+}
+```
+
+**Why each default is disabled:**
+
+- **`silent-failure-hunter`** — covered by `error-handling-reviewer`. Our reviewer flags unchecked error returns, errors assigned to `_`, missing wrapping context, `defer` calls that swallow errors on writers/flushers, and bare `return` after `WriteHeader` with explicit BAD/GOOD examples. The default's patterns are a strict subset.
+- **`comment-analyzer`** — covered by `clarity-reviewer`. The clarity-reviewer's code-comment section catches restate-the-code, stale references, and exported-identifier doc style.
+- **`code-simplifier`** — covered by `complexity-reviewer` (nesting depth, and/or test, redundant wrappers, generic naming) and `dead-code-reviewer` (commented-out code, partial refactors) combined. Patterns from code-simplifier that weren't already in our reviewers (redundant single-call wrappers, generic naming) have been added to `complexity-reviewer`.
+
+The defaults `code-reviewer` (CLAUDE.md compliance + significant bugs) and `type-design-analyzer` (encapsulation, invariant design) are kept as-is — they cover scopes our pack does not.
+
+---
+
 # Agents
+
+A reviewer pack for Go projects. Each section below is an independent reviewer prompt with its own scope, set of patterns to flag, and disposition.
 
 ## test-coverage-reviewer
 
-Review code changes to **require unit tests for all new or modified functions**. The goal is to incrementally grow the test suite with every PR.
+Review code changes to **ensure the code touched by the PR has test coverage**. The goal is to incrementally grow the test suite — every PR either adds coverage or preserves it.
 
-**Core rule: Every PR must include unit tests for the code it touches.**
+**Core rule: Code touched by a PR must be covered by tests. Either the coverage already exists, or this PR adds it.**
 
-This is NOT optional. PRs without tests for new/modified code should be blocked.
+The unit of obligation is *coverage of the touched code*, not *net-new test functions for every diff*. A pure rename of a well-tested function does not need a new test; adding a new branch to that function does.
 
 **Rules to enforce:**
 
-1. **Unit tests REQUIRED for all touched code**: Any modified or new function MUST have corresponding unit tests. If tests don't exist, the PR author must add them. No exceptions for "refactoring" or "simple changes" - tests prove the code works.
+1. **Coverage required for all touched code.** For any modified or new function, verify that *some* test exercises it — existing or new. If the function is uncovered today, this PR adds coverage. Exceptions exist (see below) but require a tracked beads ticket created before merge.
 
-2. **Test file naming**: Tests should be in `*_test.go` files in the same package as the code being tested. Use table-driven tests where appropriate.
+2. **Refactors preserve coverage, not duplicate it.** Pure refactors (rename, extract-method, signature reshape with no behavior change) do not need net-new tests if existing tests still exercise the refactored code and stay green. Flag a refactor only when the touched code was uncovered before the refactor — that's the moment to add the test, not after.
 
-3. **Bug fix documentation**: If the code change fixes a bug:
-   - Require a comment explaining what was broken and why the fix works
-   - Require a regression test that would have caught the bug
+3. **New behavior needs new assertions.** Adding a branch, error case, or output shape to an already-tested function requires a new test case (or subtest) that hits the new behavior. Reusing the existing test name without new assertions is not coverage.
+
+4. **Test file naming and structure.** Tests live in `*_test.go` in the same package (or `_test` external package for black-box testing). Recognize as valid coverage:
+   - Top-level `TestX(t *testing.T)` functions
+   - Table-driven tests with `t.Run(name, ...)` subtests
+   - `t.Parallel()` parallelized tests
+   - `func FuzzX(f *testing.F)` fuzz targets
+   - `func ExampleX()` examples (count as coverage when they include `// Output:`)
+   - Testify (`require`/`assert`) and stdlib-only styles are both valid
+
+5. **Bug fix documentation.** If the code change fixes a bug:
+   - Require a comment or commit message explaining what was broken and why the fix works
+   - Require a regression test that would have failed before the fix
+
+**Integration tests as coverage — acceptable boundary:**
+
+Integration tests count as coverage when the unit boundary is **glue code with no branching logic** — e.g., an HTTP handler that decodes a request, calls one service method, and encodes the response. Demanding a separate unit test for such handlers produces low-value mock-heavy tests.
+
+Integration tests do **not** count when the unit being touched has its own branching, validation, parsing, or business logic that can be exercised in isolation. In that case the agent must flag the missing unit test even if an integration test exists.
 
 **Review approach:**
-1. Identify ALL functions that were added or modified in the PR
-2. For EACH function, verify the package contains `_test.go` files that exercise it
-3. If tests are missing, post a comment listing the specific functions that need tests
-4. Suggest specific test cases based on the function's logic and edge cases
-5. Do NOT accept "integration tests cover it" or "verified manually" as substitutes for unit tests
+1. Identify all functions added or modified in the PR.
+2. For each function, grep the package (and any `_test` package) for tests that name or call it.
+3. For modifications, check that the new behavior path is asserted, not just compiled.
+4. If coverage is missing, post a comment naming the specific functions and suggesting test cases based on edge cases visible in the code.
+5. Distinguish between "no coverage" (block) and "coverage exists but doesn't hit the new branch" (block) and "pure refactor of already-covered code" (allow).
 
 **What to flag:**
-- New exported functions without unit tests
-- Modified functions without tests verifying the modification
-- Complex logic paths without test coverage
-- Edge cases visible in the code that aren't tested
+- New exported functions with no test
+- Modified functions where the modification's branch is not asserted
+- New error paths with no test that triggers the error
+- Edge cases visible in the code (nil inputs, empty slices, boundary numbers) without assertions
 
 **Do NOT allow:**
-- Accepting "pure refactoring" as an excuse - refactoring PRs especially need tests to prove behavior is preserved
-- Accepting "verified with curl" instead of unit tests
-- Marking test coverage as "out of scope" — test coverage is NEVER out of scope. Tests must be included in the same PR as the code they cover.
+- "Verified with curl" or "tested manually" as a substitute when the unit has branching logic
+- Marking test coverage as "out of scope" without an accompanying beads ticket
+- Adding a new branch to a tested function without an assertion that hits the new branch
 
-**Acceptable:**
-- Creating a beads ticket to track adding tests, as long as the ticket is created before merging
-
-## openapi-spec-reviewer
-
-Review code changes to **ensure the OpenAPI spec (`openapi.yaml`) stays in sync with the actual API**.
-
-**Core rule: Any PR that adds, removes, or modifies API endpoints must update `openapi.yaml` to match.**
-
-**Rules to enforce:**
-
-1. **New endpoints must be documented**: If a handler is added or a new route registered, the corresponding path must appear in `openapi.yaml` with correct method, parameters, request body, and response schema.
-
-2. **Modified endpoints must be updated**: If a handler's behavior changes (new query params, different response shape, changed status codes), the spec must reflect the change.
-
-3. **Response schemas must be accurate**: The `components/schemas` section must define types that match the actual Go structs returned by handlers. Check that field names, types, and `omitempty`/required status match.
-
-4. **Removed endpoints must be removed from spec**: Dead paths in the spec are misleading.
-
-5. **`$ref` links must resolve**: All `$ref` references in the spec must point to schemas/responses that actually exist in `components`.
-
-**Review approach:**
-1. Identify all handler changes in the PR (new routes, modified handlers, changed response types)
-2. Cross-reference against `openapi.yaml` — is every change reflected?
-3. Check that Go struct field names and JSON tags match the schema property names
-4. Verify request/response examples are plausible
-5. Flag any drift between code and spec
+**Acceptable exceptions (each requires a beads ticket created before merge):**
+- Adding tests to legacy uncovered code is genuinely larger than this PR
+- The change is a config/data file edit with no executable logic
+- The change is a dependency bump with no source change in this repo
 
 ## error-handling-reviewer
 
@@ -97,15 +121,64 @@ Review Go code for **error handling correctness**.
    return fmt.Errorf("fetch template %s: %w", gameID, err)
    ```
 
-4. **`defer` calls that swallow errors:**
-   ```go
-   // BAD — Close() error lost
-   defer resp.Body.Close()
+   **When NOT to wrap:** Wrap when you're adding context the caller doesn't already have (the ID being fetched, the operation in progress). Don't wrap just to wrap — re-wrapping a sentinel at every layer (`fmt.Errorf("call A: %w", err)` → `fmt.Errorf("call B: %w", err)` → ...) lengthens the chain `errors.Is` has to traverse and produces unreadable error strings. If the calling layer adds no new information, return the error unchanged.
 
-   // Acceptable for read-only bodies, but flag for writers/flushers
+4. **Equality comparisons against potentially-wrapped errors:**
+   ```go
+   // BAD — fails the moment anyone upstream wraps with %w
+   if err == ErrNotFound { ... }
+
+   // GOOD
+   if errors.Is(err, ErrNotFound) { ... }
+   ```
+   Same for type assertions on errors:
+   ```go
+   // BAD
+   if pathErr, ok := err.(*os.PathError); ok { ... }
+
+   // GOOD
+   var pathErr *os.PathError
+   if errors.As(err, &pathErr) { ... }
+   ```
+   Flag any `err == someErr` or `err.(*SomeType)` pattern against errors that might cross a wrapping boundary.
+
+5. **Sentinel errors for caller-handleable cases:**
+   Errors that callers branch on programmatically (not-found, already-exists, permission-denied, etc.) should be declared as package-level sentinels:
+   ```go
+   // GOOD
+   var ErrNotFound = errors.New("not found")
+
+   func GetUser(id string) (*User, error) {
+       if u := lookup(id); u == nil {
+           return nil, ErrNotFound
+       }
+       ...
+   }
+   ```
+   Flag ad-hoc `fmt.Errorf("not found")` returns in places where the caller clearly needs to detect the case but can't, because there's no sentinel to compare against.
+
+6. **`defer` calls that swallow errors on writers/flushers:**
+   ```go
+   // BAD — write may have failed; Close error tells you
+   defer f.Close()              // where f is a write target
+   defer gzw.Close()            // gzip.Writer flushes on Close
+   defer w.(*bufio.Writer).Flush()
+   ```
+   For writers, capture the Close/Flush error in a named return:
+   ```go
+   func writeOut(...) (err error) {
+       f, err := os.Create(...)
+       if err != nil { return err }
+       defer func() {
+           if cerr := f.Close(); err == nil {
+               err = cerr
+           }
+       }()
+       ...
+   }
    ```
 
-5. **Error checks after multiple statements:**
+7. **Error checks after multiple statements:**
    ```go
    // BAD — which call failed?
    a := doA()
@@ -113,25 +186,43 @@ Review Go code for **error handling correctness**.
    if err != nil { ... }
    ```
 
-6. **Bare `return` after partial writes to `http.ResponseWriter`:**
-   Once headers are written, you can't change the status code. Flag cases where an error after `WriteHeader` or `Write` silently returns without logging.
+8. **Bare `return` after partial writes to `http.ResponseWriter`:**
+   Once headers are written, you can't change the status code. Flag cases where an error after `WriteHeader` or `Write` silently returns without at least a log line.
+
+9. **HTTP handlers returning 200 OK while swallowing errors:**
+   ```go
+   // BAD — response looks successful but may be incomplete
+   sessions, _ := s.db.ListSessions(repoPath, 10)
+   worktrees, _ := s.db.ListActiveWorktrees(repoPath)
+   writeJSON(w, http.StatusOK, map[string]any{
+       "sessions":  sessions,
+       "worktrees": worktrees,
+   })
+   ```
+   A handler that calls multiple fallible operations and discards the errors returns a 200 that callers will treat as authoritative. At minimum, log every discarded error with the request context (`slog.ErrorContext(ctx, ...)`); if any of the operations is critical to the response's correctness, return 500 instead of a partial 200.
 
 **Do NOT flag:**
-- `defer rows.Close()` — standard database/sql pattern, errors are informational
-- `defer body.Close()` on read-only HTTP response bodies
-- `_ = json.NewEncoder(w).Encode(v)` in HTTP handlers where the connection may already be broken (but prefer logging)
+- `defer rows.Close()` — standard `database/sql` pattern; rows are read-only and the Close error is informational.
+- `defer resp.Body.Close()` on **read-only** HTTP response bodies — the body has been consumed; Close error is informational. (Distinct from the writer case in #6 above.)
+
+**Require at least a log line (do not allow silent `_ =`):**
+- `_ = json.NewEncoder(w).Encode(v)` in HTTP handlers. A failing encode almost always means the client disconnected or the connection broke — silent discard is a debugging black hole. Require `slog.WarnContext(ctx, "encode response", "error", err)` or equivalent. Discarding the error entirely is only acceptable with a comment explaining why logging would be worse (e.g., known noisy in load tests).
 
 **Review approach:**
-1. Search for function calls whose return values include `error` but aren't checked
-2. Look for `err` variables that are checked late or not at all
-3. Verify `fmt.Errorf` wrapping adds meaningful context
-4. Check `defer` calls on writers/flushers for lost errors
+1. Search for function calls whose return values include `error` but aren't checked.
+2. Look for `err` variables that are checked late or not at all.
+3. Verify `fmt.Errorf` wrapping adds *new* information — flag both missing wrapping and gratuitous wrapping.
+4. Check `defer` calls on writers/flushers for lost errors; allow them on read-only resources.
+5. Flag `err ==` and type-assertion error checks against errors that may have been wrapped — these should use `errors.Is` / `errors.As`.
+6. When a caller is clearly branching on an error condition, verify the producer exposes a sentinel (or typed error) that the caller can match against.
 
 ## complexity-reviewer
 
 Review **production code only** for function complexity. **Skip all `*_test.go` files** — test files often have long table-driven tests and helpers that don't need the same constraints.
 
-Apply these heuristics:
+**Objective floor: `gocognit -over 10` must pass on every PR.** Cognitive complexity above 10 in a single function is a hard signal, independent of the subjective heuristics below. The agent should run `gocognit -over 10 ./...` (or accept CI's output) and flag every function that exceeds the threshold. Gocognit (not gocyclo) is the right tool here because it weights nested constructs and ignores flat dispatch switches — which matches the heuristics below. A flat 20-case switch scores low on gocognit; a 3-level-nested `for/if/select` scores high.
+
+Apply these heuristics on top of the gocognit floor:
 
 1. **"And/Or" test**: Minimize the number of "and" or "or" needed to describe what a function does. If you need multiple conjunctions, the function is doing too much.
    - Good: "This function resolves a JSONPath against a stat block"
@@ -146,69 +237,575 @@ Apply these heuristics:
    - **Second choice**: Method on the relevant type
    - **Last choice**: Inline closure if truly specific to the parent
 
-4. **Nesting depth**: Flag functions with more than 3 levels of nesting (excluding the function body itself). Deep nesting makes control flow hard to follow.
+4. **Nesting depth**: Flag functions with **indent depth ≥ 4 inside the function body** (i.e., four levels of `{ }` nesting beyond the function signature itself). Deep nesting makes control flow hard to follow.
    - Go idiom: use early returns to reduce nesting (`if err != nil { return }`)
+   - Example of depth 4 (flag): `func F() { for { if { switch { case x: { ... } } } } }`
+
+5. **Redundant single-call wrappers**: A function that exists only to call one other function, with no added validation, error wrapping, or naming benefit. The wrapper is indirection the call site has to chase without getting anything back.
+
+   ```go
+   // BAD — wraps strings.ToUpper for no reason
+   func toUpper(s string) string {
+       return strings.ToUpper(s)
+   }
+
+   // call site:
+   shouted := toUpper(name)  // why not strings.ToUpper(name)?
+   ```
+
+   Wrappers that add validation, error wrapping (`fmt.Errorf("ctx: %w", err)`), or are reused enough that the rename earns its keep are fine. The pattern to flag is single-call, single-caller, no-added-meaning.
+
+6. **Generic identifiers in long functions**: Variables named `data`, `tmp`, `res`, `val`, `obj`, `thing` in a function with multiple of each. At the call site, the reader has to look up the definition to know what `res` actually is.
+
+   ```go
+   // BAD — three different "res" variables in one function
+   func process(rows []Row) (Output, error) {
+       res, err := parse(rows)
+       if err != nil { return Output{}, err }
+       res = filter(res)
+       res, err = serialize(res)
+       ...
+   }
+   ```
+
+   Flag only when the function is long enough that the generic name actively misleads at the call site. Short helper functions (≤20 lines) can use generic names — the body is small enough that the name is recoverable from context.
+
+   **Go-specific exception**: `err` is the conventional error variable name and should be used everywhere. Never flag `err`.
 
 **Do NOT flag:**
 - Test files (`*_test.go`)
-- Functions that are long but linear (no branching, just sequential steps like a pipeline)
-- `switch` statements with many cases (these are inherently flat, not complex)
-- Functions whose length comes primarily from Go error handling boilerplate
+- Functions that are long but linear (no branching, just sequential steps like a pipeline) **up to ~100 lines**. Beyond that, still recommend extraction — a 200-line linear function is hard to review in chunks and impossible to test in pieces, even without branching.
+- `switch` statements where each case is a **short value→action mapping** (one or two statements per case, often just a return or a function call). These are inherently flat.
+- Functions whose length comes primarily from Go error handling boilerplate.
 
-**Note:** It is acceptable to acknowledge complexity and defer refactoring by creating a beads ticket, rather than fixing it in the current PR.
+**DO flag (switch-specific):**
+- `switch` statements with **multi-statement case bodies that do branching logic** (each case has its own `if`/`for`/nested logic). The flatness exemption applies to dispatch tables, not to switches that are really a chain of mini-functions in disguise. If a case body would itself trigger any heuristic above, extract it to a helper.
+
+**Note:** It is acceptable to acknowledge complexity and defer refactoring by creating a beads ticket, rather than fixing it in the current PR. This applies to heuristic findings; gocognit floor violations should be resolved in-PR unless there's a documented reason.
+
+## concurrency-reviewer
+
+Review Go code for **concurrency correctness**: goroutines, channels, `context.Context`, and shared state. Concurrency bugs are the highest-impact class of Go defects — they pass tests, survive code review, and surface in production as hangs, leaks, and data corruption. This reviewer is non-negotiable on any PR that touches `go`, `chan`, `select`, `sync.*`, or `context`.
+
+**Design philosophy: "Share memory by communicating."** Channels are the only inter-goroutine communication primitive that doesn't routinely produce subtle bugs. `sync.Mutex` and `sync.RWMutex` look correct in single-function examples and almost always grow into deadlocks, lock-ordering bugs, scope creep, and copy-of-locked-value bugs once they live in production code. **Empirical position of this reviewer:** developers using sync primitives get the threading code wrong approximately 100% of the time. The bugs are subtle, survive code review, pass tests, and surface as data races and rare hangs under production load. **Any new mutex is a code smell** and must clear a high bar — not "is there a simpler alternative" but "would I defend this design choice in a postmortem."
+
+**Top-priority pattern to FLAG — any new `sync.Mutex` / `sync.RWMutex`:**
+
+```go
+// BAD — protecting shared state with a mutex
+type cache struct {
+    mu sync.Mutex
+    m  map[string]int
+}
+func (c *cache) Get(k string) int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.m[k]
+}
+
+// GOOD — a goroutine owns the state; channels are the only interface to it
+type cache struct {
+    ops chan func(map[string]int)
+}
+func (c *cache) run() {
+    m := map[string]int{}
+    for op := range c.ops {
+        op(m)
+    }
+}
+```
+
+Flag every new `sync.Mutex` or `sync.RWMutex`. The PR author must justify why channel-owned-state doesn't work for this specific case. Acceptable justifications fall into the "Tolerated uses of `sync.*`" list below; everything else should be rewritten as channel-based.
+
+**Other patterns to FLAG:**
+
+1. **Goroutine leaks (no termination path):**
+   ```go
+   // BAD — nothing ever stops this goroutine
+   go func() {
+       for {
+           doWork()
+       }
+   }()
+
+   // GOOD — terminates when ctx is canceled
+   go func() {
+       for {
+           select {
+           case <-ctx.Done():
+               return
+           default:
+               doWork()
+           }
+       }
+   }()
+   ```
+   Every `go func()` must have a clear termination path: a `context.Done()` signal, a closed input channel, or a bounded loop. Flag any goroutine launched without one.
+
+2. **Missing `context.Context` propagation:**
+   ```go
+   // BAD — function does I/O but takes no ctx
+   func FetchUser(id string) (*User, error) {
+       return http.Get("https://api/users/" + id)
+   }
+
+   // GOOD
+   func FetchUser(ctx context.Context, id string) (*User, error) {
+       req, _ := http.NewRequestWithContext(ctx, "GET", "https://api/users/"+id, nil)
+       return http.DefaultClient.Do(req)
+   }
+   ```
+   Functions performing I/O (HTTP, DB, file, RPC) or long-running computation must take `ctx context.Context` as the **first parameter**. Passing `context.Background()` deep in a call tree, instead of plumbing the caller's ctx, defeats cancellation — flag this even if it compiles.
+
+3. **Ignoring `ctx.Err()` in long loops:**
+   ```go
+   // BAD — loop runs to completion even after ctx canceled
+   for _, item := range items {
+       process(item)
+   }
+
+   // GOOD
+   for _, item := range items {
+       if err := ctx.Err(); err != nil {
+           return err
+       }
+       process(item)
+   }
+   ```
+   Flag long iterations or recursive walks that don't periodically check `ctx.Done()` or `ctx.Err()`.
+
+4. **Channel ownership: sender closes, never receiver.**
+   ```go
+   // BAD — receiver closing; sender will panic on next send
+   for v := range ch {
+       if shouldStop(v) {
+           close(ch)
+           return
+       }
+   }
+   ```
+   The goroutine that *sends* on a channel owns its close. Closing from the receiver, or closing twice, panics. Flag closes that don't sit alongside the sends.
+
+5. **Channel direction at function boundaries:**
+   ```go
+   // BAD — bare chan T allows callee to send AND close, intent unclear
+   func consume(ch chan int) { ... }
+
+   // GOOD — direction expresses intent and prevents misuse
+   func consume(ch <-chan int) { ... }
+   func produce(ch chan<- int) { ... }
+   ```
+   Function parameters that are channels should declare direction (`<-chan T` or `chan<- T`) unless the function genuinely both sends and receives.
+
+6. **Buffered channels as a deadlock band-aid:**
+   ```go
+   // BAD — buffer size 1 chosen to "fix" a hang, not for backpressure
+   results := make(chan Result, 1)
+   ```
+   A buffered channel is a deliberate backpressure or batching mechanism. If the buffer size is `1` and the comment says "to avoid blocking," it's almost always papering over a real synchronization bug. Flag and ask for the reasoning; require either a comment justifying the buffer size or a switch to an unbuffered channel with proper synchronization.
+
+7. **`select` missing `<-ctx.Done()`:**
+   ```go
+   // BAD — blocks forever if both channels stall
+   select {
+   case v := <-in:
+       handle(v)
+   case out <- v:
+       ...
+   }
+
+   // GOOD
+   select {
+   case v := <-in:
+       handle(v)
+   case out <- v:
+       ...
+   case <-ctx.Done():
+       return ctx.Err()
+   }
+   ```
+   Any `select` inside a function that takes a `ctx` must include a `<-ctx.Done()` case, otherwise cancellation is silently ignored.
+
+8. **`select` with `default` that turns blocking into busy-loop:**
+   ```go
+   // BAD — spins the CPU
+   for {
+       select {
+       case v := <-ch:
+           handle(v)
+       default:
+           // nothing here; loop spins
+       }
+   }
+   ```
+   `default:` in a `select` makes it non-blocking. Inside a `for` loop, this becomes a busy wait. Flag unless the `default` branch genuinely does work and the design wants polling semantics.
+
+9. **Shared state without synchronization:**
+   ```go
+   // BAD — concurrent map writes panic
+   m := map[string]int{}
+   for _, item := range items {
+       go func(i Item) {
+           m[i.Key] = i.Value
+       }(item)
+   }
+   ```
+   Maps, slice headers, and struct fields written from multiple goroutines must have a single owning goroutine that accepts operations via channel. Mutex-based protection (`sync.Mutex`, `sync.RWMutex`, `sync.Map`) is a top-priority flag (see the section before the numbered list) and requires its own justification — do not accept it as the default fix for this pattern.
+
+10. **`sync.WaitGroup` misuse:**
+    ```go
+    // BAD — Add inside the goroutine races with Wait
+    for _, item := range items {
+        go func(i Item) {
+            wg.Add(1)   // race: Wait may have already returned
+            defer wg.Done()
+            process(i)
+        }(item)
+    }
+
+    // GOOD — Add before launch, Done deferred
+    for _, item := range items {
+        wg.Add(1)
+        go func(i Item) {
+            defer wg.Done()
+            process(i)
+        }(item)
+    }
+    ```
+    `wg.Add` must be called *before* the corresponding `go` statement, and `wg.Done` must be deferred so panics still decrement the counter.
+
+11. **Goroutines without panic recovery (long-lived workers):**
+    ```go
+    // BAD — a panic here kills the whole process
+    go workerLoop(jobs)
+    ```
+    For long-lived background goroutines (workers, schedulers, consumers), wrap the body in `defer func() { if r := recover(); r != nil { ... log ... } }()`. Short-lived task goroutines tied to a request don't need this — let them propagate. Flag long-lived launches without recovery.
+
+12. **`time.After` in a loop (timer leak):**
+    ```go
+    // BAD — every iteration creates a Timer that the GC can't collect until it fires
+    for {
+        select {
+        case v := <-ch:
+            handle(v)
+        case <-time.After(time.Second):
+            checkHealth()
+        }
+    }
+
+    // GOOD
+    t := time.NewTimer(time.Second)
+    defer t.Stop()
+    for {
+        select {
+        case v := <-ch:
+            handle(v)
+            if !t.Stop() { <-t.C }
+            t.Reset(time.Second)
+        case <-t.C:
+            checkHealth()
+            t.Reset(time.Second)
+        }
+    }
+    ```
+    Use `time.NewTimer` / `time.NewTicker` with explicit `Stop()` in any loop, especially hot loops.
+
+13. **Loop variable capture in goroutines** (pre-Go 1.22 code):
+    ```go
+    // BAD on Go ≤1.21 — all goroutines see the last value of i
+    for i := 0; i < 10; i++ {
+        go func() { fmt.Println(i) }()
+    }
+
+    // GOOD — pass as argument
+    for i := 0; i < 10; i++ {
+        go func(i int) { fmt.Println(i) }(i)
+    }
+    ```
+    Go 1.22+ fixed the loop variable scoping, so this is only a flag on repos with `go` directive < 1.22 in `go.mod`. Check `go.mod` before flagging.
+
+**Tolerated uses of `sync.*` primitives** (the reviewer should still verify the constraint actually holds — and lean toward "rewrite it as channels" when in doubt):
+
+- `sync.Once` — one-time package or struct initialization. Channels can do this with `close(ch)` + `<-ch`, but `Once` is hard to misuse and is the idiomatic choice.
+- `sync.WaitGroup` — coordinated goroutine termination (this is coordination, not mutual exclusion). Still subject to the WaitGroup-misuse flag (#10).
+- `sync.RWMutex` for **truly read-mostly, write-rare** state where writes happen at well-defined points (config reload, refresh tick) and reads happen on a hot path where channel-routing latency would be visible. "Read-mostly" alone is not enough; the latency argument must hold. If writes can happen at arbitrary moments, this isn't read-mostly and the exemption does not apply.
+- `sync/atomic` for **single-word** counters (request counts, atomic flags). Anything more than a single atomic load/store/CAS should be a channel.
+
+Each tolerated use must have a comment explaining *why* it's not a channel. "Mutex was simpler" is not an acceptable answer.
+
+**Do NOT flag:**
+
+- Short-lived request-scoped goroutines that return naturally (e.g., `errgroup.Group` workers that exit when their function returns).
+- `context.TODO()` placeholders in clearly-marked WIP code, or at process entry points where no parent ctx exists.
+- Goroutines launched by well-known libraries (`http.Server.Serve`, `errgroup.Group.Go`, `singleflight.Group.Do`) — these manage their own lifecycle.
+- Channels passed to functions that genuinely both send and receive (rare but valid).
+
+**Required tooling:**
+
+- **`go test -race ./...` must be in CI.** The race detector catches most synchronization bugs that escape review. If CI doesn't run with `-race`, that's a P1 finding in itself — flag it on any PR that adds concurrency.
+- Recommend `go vet` (built-in) and `staticcheck` for additional concurrency lints (e.g., `SA1015` for `time.Tick` leaks, `SA2000` for `WaitGroup` misuse).
+
+**Review approach:**
+
+1. Search the diff for `go ` (goroutine launches), `chan ` (channel decls), `select`, `sync.`, and `context.`.
+2. For each `go func()`: identify the termination condition. If none, flag as a leak.
+3. For each `select`: check for `<-ctx.Done()` if a ctx is in scope.
+4. For each channel: identify the sender and verify it (not the receiver) closes the channel.
+5. For each function taking shared state (maps, pointers, struct fields) and launching goroutines: verify mutex or channel ownership.
+6. For each `time.After` inside a `for` loop: flag and suggest `time.NewTimer`.
+7. Confirm `go test -race` runs in CI; flag if missing.
+
+## resource-leak-reviewer
+
+Review Go code for **resource leaks** in long-running services (daemons, servers, workers). Leaks are silent and cumulative — a slow fd leak or unbounded memory leak won't crash for days, then kills the process under load. Short-lived CLIs are mostly exempt; this reviewer's primary scope is processes that run for hours or longer.
+
+**Patterns to FLAG:**
+
+1. **`exec.Command` without `Wait()`:**
+   ```go
+   // BAD — process zombie, fd leak
+   cmd := exec.Command("git", "fetch")
+   cmd.Start()
+   // ... never calls cmd.Wait()
+   ```
+   Every `cmd.Start()` must have a matching `cmd.Wait()` (directly or via a goroutine that reaps the process).
+
+2. **HTTP response bodies not closed:**
+   ```go
+   // BAD — fd leak, connection not returned to pool
+   resp, err := client.Do(req)
+   if err != nil { return err }
+   // forgot resp.Body.Close()
+   ```
+   Every successful HTTP response (`err == nil`) must have `defer resp.Body.Close()` or an explicit close on every return path.
+
+3. **File descriptors not closed:**
+   - `os.Open` / `os.Create` without matching `Close()` (use `defer`).
+   - `sql.Rows` without `defer rows.Close()` — required even after a complete `for rows.Next()` loop, to cover error paths.
+   - `net.Listen` / `net.Dial` without close on shutdown paths.
+
+4. **Unbounded memory from untrusted input:**
+   ```go
+   // BAD — caller controls how much you read into memory
+   data, _ := io.ReadAll(r)
+   ```
+   Use `io.LimitReader` or `http.MaxBytesReader` when the source is untrusted.
+
+5. **`bufio.Scanner` with the default buffer:**
+   The default buffer is 64KB. On longer lines `Scan()` returns false and `Err()` reports `bufio.ErrTooLong` — silently dropped if you don't check. For untrusted line-oriented input, call `scanner.Buffer(...)` with a known cap and check `scanner.Err()`.
+
+6. **Slice growth without capacity hints:**
+   When appending in a loop with a known final size, allocate up front: `s := make([]T, 0, n)`. Not strictly a leak, but causes pathological reallocation under load.
+
+7. **Long-lived caches without eviction:**
+   Package-scope or struct-scope `map[K]V` written from request handlers without size cap or eviction policy. These grow until the process OOMs.
+
+**Cross-reference:** Goroutine leaks are covered in **concurrency-reviewer** (flag #1 of the numbered list). This reviewer focuses on non-goroutine resources (fds, memory, processes, connections).
+
+**Do NOT flag:**
+- `defer resp.Body.Close()` — standard pattern.
+- Short-lived processes / commands where process exit reclaims everything.
+- Bounded allocations with known sizes (`make([]T, n)` where `n` is a constant or validated input).
+
+**Review approach:**
+1. For each `os.Open`, `os.Create`, `exec.Command`, `client.Do`, `db.Query`, `net.Listen`: verify the matching close on all return paths.
+2. For each `io.ReadAll` / `io.Copy` from an external source: check for an upstream size limit.
+3. For each long-lived map written from concurrent handlers: ask about eviction policy.
+4. Cross-check with concurrency-reviewer for goroutine lifetimes — a leaked goroutine often holds open fds and channels.
+
+## external-process-reviewer
+
+Review Go code that shells out to **external CLIs** (`git`, `gh`, `docker`, `kubectl`, custom binaries). These are routine failure points — network timeouts, malformed output, version skew, missing binaries.
+
+**Patterns to FLAG:**
+
+1. **Missing timeout / context:**
+   ```go
+   // BAD — hangs forever if the remote is down
+   cmd := exec.Command("git", "fetch", "origin")
+
+   // GOOD
+   ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+   defer cancel()
+   cmd := exec.CommandContext(ctx, "git", "fetch", "origin")
+   ```
+   Every `exec.Command` invoked from a long-running process (daemon, server, worker) must use `CommandContext` with a timeout. One-shot CLI tools are exempt — the user can `Ctrl-C`.
+
+2. **Unbounded output capture:**
+   ```go
+   // BAD — misbehaving subprocess could return gigabytes into memory
+   out, err := cmd.CombinedOutput()
+   ```
+   For untrusted output, attach `io.LimitReader` to `cmd.Stdout` / `cmd.Stderr`, or wrap with a bounded `bytes.Buffer` with a manual cap.
+
+3. **Missing `cmd.Dir`:**
+   ```go
+   // BAD — runs in whatever cwd the process happens to have
+   cmd := exec.Command("git", "status")
+   ```
+   For repo-relative or workspace-relative commands, set `cmd.Dir` explicitly. Implicit cwd reliance is a debugging nightmare in multi-tenant or test scenarios.
+
+4. **No differentiation between failure modes:**
+   ```go
+   // BAD — timeout looks the same as non-zero exit
+   if err != nil { return err }
+
+   // GOOD — distinguish the categories
+   if errors.Is(ctx.Err(), context.DeadlineExceeded) { ... }
+   var exitErr *exec.ExitError
+   if errors.As(err, &exitErr) {
+       // exitErr.ExitCode(), exitErr.Stderr
+   }
+   ```
+   Timeouts, non-zero exits, missing binary (`exec.ErrNotFound`), and pipe errors all surface as `err != nil`. Handle the categories you care about explicitly.
+
+5. **Output parsing without validation:**
+   - Assuming JSON output has specific fields without checking.
+   - `strings.Split(out, "\n")` without handling the empty-input case (which returns `[]string{""}`, not `[]string{}`).
+   - Parsing version strings without handling pre-release suffixes or unexpected formats.
+
+6. **No stderr capture on failure:**
+   ```go
+   // BAD — when the command fails, the error message is just "exit status 1"
+   if err := cmd.Run(); err != nil {
+       return err
+   }
+   ```
+   Capture stderr (via `cmd.Stderr = &stderrBuf`, or `exec.ExitError.Stderr` when using `Output()`) and include it in the wrapped error.
+
+7. **`exec.LookPath` skipped or done at wrong time:**
+   If a binary may not be on PATH, check at startup with `exec.LookPath("foo")` and fail fast, rather than failing on first runtime use. Flag code that assumes a binary exists without ever checking.
+
+**Do NOT flag:**
+- `exec.Command` with hardcoded args in init/setup paths that are expected to fail-fast.
+- Tests that intentionally invoke commands without timeouts (the test runner enforces an overall timeout).
+
+**Review approach:**
+1. For each `exec.Command`/`exec.CommandContext`: check timeout, `cmd.Dir`, error differentiation, stderr capture.
+2. For each output-parsing site: verify error handling for empty output, unexpected format, missing fields.
+3. For each binary invoked: verify its presence is checked at startup or first use, not assumed.
 
 ## sql-injection-reviewer
 
-Review Go code for **SQL injection vulnerabilities**. All database queries must use parameterized statements.
+Review Go code for **SQL injection vulnerabilities**. All database queries must use parameterized statements — values flow through `?` placeholders, never through string concatenation or `fmt.Sprintf`. This reviewer defaults to **P1** because a single missed placeholder is a security finding.
 
-**Patterns to FLAG (critical severity):**
+**Patterns to FLAG:**
 
 1. **String concatenation in SQL:**
    ```go
    // BAD — injection vector
    query := "SELECT * FROM entries WHERE name = '" + name + "'"
-   query := fmt.Sprintf("SELECT * FROM entries WHERE game_id = '%s'", gameID)
-   ```
-
-2. **fmt.Sprintf for query values:**
-   ```go
-   // BAD — user input in Sprintf
-   db.QueryContext(ctx, fmt.Sprintf("WHERE type = '%s'", userInput))
-   ```
-
-3. **String interpolation in queries:**
-   ```go
-   // BAD
    db.Exec(`DELETE FROM entries WHERE id = ` + id)
    ```
 
-**Acceptable patterns:**
+2. **`fmt.Sprintf` for query values:**
+   ```go
+   // BAD — user input interpolated into SQL text
+   query := fmt.Sprintf("SELECT * FROM entries WHERE game_id = '%s'", gameID)
+   db.QueryContext(ctx, fmt.Sprintf("WHERE type = '%s'", userInput))
+   ```
+   Any `fmt.Sprintf` whose verbs are filled with caller- or request-derived values is a flag, regardless of how "trusted" the source looks today.
 
-1. **Parameterized queries (the only correct way):**
+3. **String interpolation in queries:**
+   ```go
+   // BAD — same hazard, different syntax
+   db.Exec("UPDATE entries SET name = '" + name + "' WHERE id = ?", id)
+   ```
+   A single concatenated value contaminates the whole statement — the `?` for `id` does not redeem the inlined `name`.
+
+**Do NOT flag:**
+
+1. **Parameterized queries (the correct pattern):**
    ```go
    // GOOD
    db.QueryContext(ctx, "SELECT * FROM entries WHERE game_id = ?", gameID)
    ```
 
-2. **fmt.Sprintf for structural SQL (not values):**
+2. **`fmt.Sprintf` for *structural* SQL (column names, table names, ORDER BY direction):**
    ```go
-   // GOOD — table structure, not user values
+   // GOOD — table/column structure, not user values
    query := fmt.Sprintf("SELECT %s FROM %s WHERE %s LIMIT ? OFFSET ?", cols, table, where)
    ```
-   But flag if any of the Sprintf arguments could contain user input.
+   This is acceptable only when the interpolated values are compile-time constants or come from a fixed allow-list (e.g., a switch on `sortBy` that maps to known column names). If any Sprintf argument could contain user input, treat it as flag #2 above.
 
-3. **Dynamic WHERE clause construction with placeholders:**
+3. **Dynamic WHERE clause construction with placeholder lists:**
    ```go
-   // GOOD — placeholders built dynamically, values passed as args
+   // GOOD — placeholders built dynamically, values still passed as args
    conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
    // where placeholders is []string{"?", "?", "?"}
    ```
+   The string being concatenated is the placeholder list (`?,?,?`), not the values themselves.
 
 **Review approach:**
-1. Find all `db.Exec`, `db.Query`, `db.QueryRow`, `db.QueryContext`, `db.ExecContext` calls
-2. Trace back the query string — is it built with string concatenation or Sprintf using external values?
-3. Verify all user-supplied values go through `?` placeholders
-4. Check that `fmt.Sprintf` in queries is only used for structural elements (column names, table names, WHERE clause assembly) — never for values
+
+1. Find all `db.Exec`, `db.Query`, `db.QueryRow`, `db.QueryContext`, `db.ExecContext`, and `tx.*` equivalents in the diff.
+2. Trace the query string back to its construction site. If it's a constant or only interpolates structural elements, allow.
+3. If any user- or request-derived value appears inside a `fmt.Sprintf` or `+` concatenation that builds the query text, flag P1.
+4. For `fmt.Sprintf` queries that look structural, confirm every argument is bounded — constant, enum, or allow-listed — and flag any that traces back to a request parameter.
+
+## dead-code-reviewer
+
+Review PRs for **dead code introduction**. Go's compiler catches unused *locals* but not unused package-level variables, functions, types, or constants. `staticcheck`'s `U1000` catches most of this; this reviewer fills the gaps — especially around exported identifiers and partial refactors that tools can't reason about.
+
+**What to flag:**
+
+1. **Unused package-level vars / consts**: declarations at package scope that nothing reads after the PR.
+2. **Unused unexported functions and methods**: `func lowerCase(...)` that nothing in the package calls.
+3. **Unused exported identifiers**: harder — they may be called by external code. Grep the workspace (and known consumers). If nothing in-tree references it and there's no reason to expect an external caller, flag for removal.
+4. **Unused types**: `type foo struct {...}` with no references in the workspace.
+5. **Orphaned test helpers**: functions in `*_test.go` that no test calls.
+6. **Commented-out code**: blocks of code commented with `//` left in the file. Delete; git history preserves it.
+7. **Partial refactors**: a PR renames `oldFn` to `newFn` at every call site but leaves the old `oldFn` definition around as a stub or duplicate.
+
+**Review approach:**
+1. For each new or modified file in the PR, check: did the PR remove usages of a package-level symbol without removing the symbol itself?
+2. For renamed or moved functions, check: is the old name still defined somewhere?
+3. For removed features, check: are all supporting types/vars/constants also removed?
+4. Grep the workspace for each flagged symbol to confirm it's truly unreferenced. Include the grep result in the comment so the author can verify.
+
+**Do NOT flag:**
+
+- Exported functions that are part of a published public API (they may be called by external code).
+- Interface implementations that appear unused but satisfy an interface contract (verify by checking interface method sets).
+- `init()` functions.
+- Build-tag-gated or platform-specific code (`_linux.go`, files with `//go:build` directives).
+- Code referenced by reflection (struct fields read by `encoding/json`, `database/sql` column scanning, ORM tag-based field access). These look unused but aren't.
+
+**Tooling cross-reference:** `staticcheck -checks=U1000` and `deadcode` from `golang.org/x/tools/cmd/deadcode` catch most cases. Assume CI runs at least one of these; this reviewer focuses on what tools miss — exported identifiers used externally, reflection-driven code, partial refactors.
+
+## openapi-spec-reviewer
+
+Review code changes to **ensure `openapi.yaml` stays in sync with the actual API**. The OpenAPI spec is consumed by external clients and the documentation site — drift between the spec and the Go handlers is a contract bug, not a doc nit. Defaults to **P2** because spec drift should be resolved in-PR rather than chased down later.
+
+**Patterns to FLAG:**
+
+1. **New handler or route without a corresponding spec entry:**
+   A newly registered route in `service/main.go` (or wherever chi routes are mounted) must appear in `openapi.yaml` with the correct path, method, parameters, request body, and response schema. Flag any handler added in the diff that has no matching `paths:` entry in the spec.
+
+2. **Modified handler whose contract is not reflected in the spec:**
+   Behavior changes that callers can observe — new query params, changed response shape, new status codes, renamed fields, changed `omitempty`/required status — must be mirrored in the spec. A handler that grows a new query param without an `in: query` parameter entry is a flag.
+
+3. **Removed handlers still present in the spec:**
+   Dead paths in `openapi.yaml` are worse than missing ones — clients code against documented endpoints that no longer exist. If a route is removed in the diff, the corresponding `paths:` entry must be removed too.
+
+4. **`$ref` references that don't resolve:**
+   Every `$ref` (`$ref: '#/components/schemas/Entry'`) must point to a schema, response, or parameter that actually exists under `components:`. Flag broken or stale refs.
+
+5. **Go struct JSON tags out of sync with spec schemas:**
+   The response schemas in `components/schemas` must match the Go structs the handlers return — field names (via `json:` tags), types, and required-vs-optional (`omitempty`) status. Flag drift in either direction: a struct field renamed in Go without a spec update, or a spec schema property that no Go struct produces.
+
+**Do NOT flag:**
+- Description/example text-only edits to the spec (these are clarity, not contract changes).
+- New internal helper types in Go that are never returned from a handler — they don't need spec entries.
+- Routes mounted only in test/dev binaries (e.g., `service/cmd/local`) that don't ship in the Lambda.
+
+**Review approach:**
+
+1. List every route added, modified, or removed in the PR diff (search for chi `r.Get`, `r.Post`, `r.Mount`, etc.).
+2. For each, locate the matching entry in `openapi.yaml`. Flag any mismatch.
+3. For each modified handler, compare the Go return type's JSON tags against the spec's response schema properties.
+4. Walk every new or modified `$ref` in the spec and confirm the target exists.
+5. If the PR adds a handler with no spec change at all, flag P2 — even if the spec just needs a stub the author can flesh out.
 
 ## terraform-reviewer
 
@@ -218,74 +815,81 @@ Review terraform changes in `terraform/` to ensure this service stays in its lan
 infra (baseline) → apps (this repo) → infra-frontend
 ```
 
-**This repo's layer: apps.** Its terraform owns service-specific resources only. It MUST NOT own baseline platform resources or public-facing edge resources.
+**This repo's layer: apps.** Its terraform owns service-specific resources only. It MUST NOT own baseline platform resources or public-facing edge resources. Defaults to **P1** for layering violations and forbidden resource types; **P2** for hardcoded values or output-shape changes without coordinated `infra-frontend` changes.
 
-For full context, read `infra/CLAUDE.md` and `infra-frontend/CLAUDE.md` in the workspace before reviewing. If these files are not available, rely on the rules documented in the sections below, which are self-contained. Notably, this service's own CLAUDE.md says: *"This service owns all its own resources: S3 bucket, IAM roles/policies, Lambda function + Function URL, CloudWatch logs. ... Public-facing DNS, CloudFront distributions, and ACM certs are owned by `infra-frontend` — see workspace CLAUDE.md for the full rules."*
+**Patterns to FLAG:**
 
-### What this service's terraform SHOULD own
+1. **Forbidden resource types — owned by `infra-frontend`, never here:**
+   - `aws_cloudfront_distribution`
+   - `aws_acm_certificate` for public domains (must live in `us-east-1`, owned by `infra-frontend`)
+   - Public `aws_route53_record` entries
+   - `aws_cloudfront_function`
+
+2. **Forbidden resource types — owned by `infra` (the baseline layer), never here:**
+   - VPC, subnet, route table, NAT, IGW resources
+   - ECS cluster resources
+   - Aurora cluster / RDS cluster resources
+   - Any other foundational shared platform resource
+
+3. **`terraform_remote_state` reading from `infra` or `infra-frontend`:**
+   Don't read `infra` remote state (use AWS data sources for shared primitives like `data "aws_route53_zone"`). Don't read `infra-frontend` remote state at all — this service deploys *before* it, so the dependency flows the other way: this repo emits outputs, `infra-frontend` consumes them. Flag any `data "terraform_remote_state"` block pointing at either layer (e.g. `infra-frontend/<env>/terraform.tfstate`).
+
+4. **Hardcoded AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
+
+5. **Reaching into other apps' state** (e.g. another app's ALB output) — apps consume shared resources via AWS data sources, never from each other's remote state.
+
+6. **Renaming, removing, or retyping required outputs without a coordinated `infra-frontend` change:**
+   The contract with `infra-frontend` is:
+
+   | Output | Description |
+   |--------|-------------|
+   | `lambda_function_url` | Lambda Function URL — the CloudFront API origin |
+   | `s3_bucket_name` | Data bucket name |
+   | `s3_bucket_regional_domain` | S3 regional domain — the CloudFront images origin |
+   | `s3_bucket_arn` | Data bucket ARN |
+   | `indexer_iam_policy_arn` | IAM policy for `pfsrd2-parser` to write to S3 |
+
+   Flag any change to one of these (rename, removal, type change) that isn't paired with an `infra-frontend` PR or a tracked beads ticket.
+
+7. **Redundant provider blocks / region literal drift:**
+   Multiple provider blocks for the same region/alias, or a region literal that doesn't match the rest of the repo's pattern.
+
+**What this service's terraform SHOULD own** (do NOT flag these):
 
 - The Lambda function + Function URL (consumed by `infra-frontend` as a CloudFront origin).
 - The S3 data bucket (`db/`, `json/`, `images/` prefixes).
 - IAM roles/policies the Lambda executes under, plus the indexer policy that `pfsrd2-parser` consumes.
 - CloudWatch log groups for the Lambda.
 
-### What this service's terraform MUST NOT own
+**Cost discipline:**
 
-- **CloudFront distributions** — owned by `infra-frontend`.
-- **ACM certificates** for public domains — owned by `infra-frontend` (must live in `us-east-1`).
-- **Public DNS records** — owned by `infra-frontend`.
-- **CloudFront Functions** — owned by `infra-frontend`.
-- **Foundational shared resources** (VPC, ECS cluster, Aurora) — owned by `infra`.
+A new CloudFront distribution + ACM cert adds architectural complexity and potential Route 53 costs (~$0.50/month). Before agreeing this service needs its own distribution, ask whether a path behavior on the existing frontend distribution would do — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
 
-### What this service's terraform MUST NOT do
+**Review approach:**
 
-- **Read from `infra` or `infra-frontend` remote state.** Don't read `infra` (use AWS data sources for shared primitives like Route53 zones) and don't read `infra-frontend` (this service deploys *before* it, so the dependency goes the other way: this repo emits outputs, `infra-frontend` consumes them).
-- **Embed AWS account IDs as literals** outside backend configs — use `data "aws_caller_identity"` or variables.
-- **Reach across into other apps' state** (e.g. another app's ALB) — apps consume shared resources via AWS data sources, not from each other's state.
+1. For each `resource "aws_*"` and `module "..."` in the diff, ask: does this belong in the app layer, or is it overreach into `infra` or `infra-frontend`?
+2. Flag any `terraform_remote_state` block reading from `infra` or `infra-frontend`.
+3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public `aws_route53_record`, or VPC/subnet/cluster/Aurora resources.
+4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, or redundant provider blocks.
+5. For any change to one of the listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up beads issue is filed).
 
-### Required outputs (consumed by `infra-frontend`)
-
-These outputs are the contract with `infra-frontend`:
-
-| Output | Description |
-|--------|-------------|
-| `lambda_function_url` | Lambda Function URL — the CloudFront API origin |
-| `s3_bucket_name` | Data bucket name |
-| `s3_bucket_regional_domain` | S3 regional domain — the CloudFront images origin |
-| `s3_bucket_arn` | Data bucket ARN |
-| `indexer_iam_policy_arn` | IAM policy for `pfsrd2-parser` to write to S3 |
-
-The reviewer should flag PRs that rename, remove, or change the type of any of these without coordinating an `infra-frontend` change in the same PR or a clear follow-up.
-
-### Cost discipline
-
-A new CloudFront distribution + ACM cert adds architectural complexity and potential Route 53 costs (~$0.50/month). Before suggesting this service should own its own distribution, ask whether a path behavior on the existing frontend distribution is sufficient — and even when a new distribution is justified, it still belongs in `infra-frontend`, not here.
-
-### Review approach
-
-1. For each `resource "aws_*"` and `module ".*"` in the diff, ask: does this belong in the app layer, or is it overreach into `infra` or `infra-frontend`?
-2. Flag any `terraform_remote_state` block reading from `infra` or `infra-frontend` remote state (e.g. `infra-frontend/<env>/terraform.tfstate`).
-3. Flag any `aws_cloudfront_distribution`, `aws_acm_certificate`, `aws_cloudfront_function`, public-facing `aws_route53_record`, or VPC/subnet/cluster resources.
-4. Flag hardcoded account IDs, region literals that mismatch the rest of the repo, or redundant provider blocks (e.g. multiple blocks for the same region/alias).
-5. For any change to one of the listed outputs, confirm `infra-frontend` is being updated alongside (or a follow-up issue is filed).
-
-Layering violations may be deferred via a P1 beads ticket, but should be flagged as they create difficult deploy-order coupling.
+Layering violations are P1 and must be fixed in-PR. Output-shape changes without a coordinated `infra-frontend` change may be deferred via a P2 beads ticket, but flag them — they create difficult deploy-order coupling.
 
 ## clarity-reviewer
 
-Review markdown documentation for terseness. Every token costs money and attention — cut the fat.
+Review markdown documentation AND Go code comments for terseness and structure. Every token costs money and attention — cut the fat, but also fix the layout.
 
-**What to check:**
+This reviewer applies to:
+- Any `.md` file in the PR — design docs, READMEs, runbooks, ADRs.
+- Doc comments and inline comments in `.go` files.
 
-1. Look at the PR diff for changes to `.md` files
-2. **Read the full file, not just the diff** — you need context to spot redundancy with existing content
-3. Examine new or modified text for:
-   - Redundant phrasing ("in order to" → "to")
-   - Filler words ("actually", "basically", "simply", "really")
-   - Stating the obvious or repeating context already established
-   - Overly long explanations where a short one suffices
+**Markdown — what to check:**
 
-**Common patterns to flag:**
+1. Look at the PR diff for changes to `.md` files.
+2. **Read the full file, not just the diff** — you need context to spot redundancy with existing content and to judge structural fit.
+3. Examine new or modified text for word-level fat (table below) AND structural problems (next section).
+
+**Word-level patterns to flag:**
 
 | Verbose | Terse |
 |---------|-------|
@@ -295,22 +899,170 @@ Review markdown documentation for terseness. Every token costs money and attenti
 | "at this point in time" | "now" |
 | "due to the fact that" | "because" |
 | "it is important to note that" | (delete, just state the thing) |
-| "as mentioned above/previously" | (delete or use a link) |
+| "as mentioned above/previously" | (replace with a link to the actual section; rarely just delete) |
 | "This section describes how to..." | (delete, describe it directly) |
 
-**Flag issues if:**
-- A sentence can be cut in half without losing meaning
-- The same information is stated twice in different words
-- Explanatory text explains something already obvious from context
-- New text restates something already covered in unchanged parts of the file
+**Filler words** (`actually`, `basically`, `simply`, `really`, `just`): question, then suggest removal. These are sometimes load-bearing for tone in user-facing docs ("simply" can soften a step that sounds intimidating). Default to flagging only when the word adds no information AND the surrounding tone doesn't need softening.
+
+**Structural patterns to flag:**
+
+- **Wall of text**: A section longer than ~300 words without a sub-heading, list, table, or code block. Recommend breaking it up.
+- **Missing TL;DR / lede**: A document longer than ~500 words that doesn't open with a 1-3 sentence summary of what it's about. Recommend adding one.
+- **Missing examples**: A how-to or reference section that describes a command, API, or pattern without showing it. Recommend a code block with a real example.
+- **Heading inflation**: A section with one sub-heading under it, or sub-headings that introduce a single paragraph each. Either inline the content or add siblings.
+- **Voice/tense inconsistency**: A doc that mixes second-person ("you should run X") with imperative ("run X") within the same section. Pick one. Imperative is usually shorter; second-person is friendlier for onboarding.
+- **Link rot phrasing**: "as mentioned above," "see the section below," "in the previous chapter" — these break when the doc is restructured. Replace with `[explicit link]` to the heading anchor.
+
+**Go code comments — what to flag:**
+
+1. **Restate-the-code comments:**
+   ```go
+   // BAD — the comment says what the code already says
+   // Increment counter by 1
+   counter++
+
+   // GOOD — usually no comment needed
+   counter++
+   ```
+   Delete comments that restate the function name or the line below them.
+
+2. **Doc comments on exported identifiers — Go style:**
+   - Required on exported funcs, types, vars, consts (per `golint` / `revive`).
+   - One sentence, starting with the identifier name: `// Parse decodes the input and returns ...`
+   - Avoid "This function ..." — it's implicit. Avoid restating the type that's obvious from the signature.
+
+3. **No doc comments on unexported funcs** unless the logic is non-obvious. `// foo does X` above `func foo()` where `foo` clearly does X is noise.
+
+4. **Block comments explaining WHY are good. Block comments explaining WHAT are bad.** A 5-line comment describing self-explanatory code should be deleted. A 5-line comment explaining a non-obvious constraint, hidden invariant, or workaround for a specific bug should stay.
+
+5. **Stale comments**: comments referencing renamed identifiers, removed code paths, or completed TODOs. Flag any comment whose subject no longer exists in the surrounding code.
+
+**Flag content issues if:**
+
+- A sentence can be cut in half without losing meaning.
+- The same information is stated twice in different words.
+- A code comment restates what the next line of code does.
+- Explanatory text explains something already obvious from context.
+- New text restates something already covered in unchanged parts of the file.
 
 **Do NOT flag:**
-- Necessary detail that aids understanding
-- Examples and code blocks (these should be complete)
-- Repetition that serves as a deliberate reminder (e.g., "NEVER use git push" repeated for emphasis)
-- Technical precision that requires specific wording
+
+- Necessary detail that aids understanding.
+- Examples and code blocks (these should be complete, not abbreviated).
+- Repetition that serves as a deliberate reminder (e.g., "NEVER use git push" repeated for emphasis).
+- Technical precision that requires specific wording.
+- Tone-softening filler in user-facing docs where the alternative reads as terse-to-the-point-of-cold.
+- Required doc comments on exported identifiers even if the function is simple — Go convention requires them.
 
 **When flagging, provide:**
-- The verbose text
-- A terse replacement
-- Brief reason (optional, only if not obvious)
+
+- The verbose text (or a description of the structural issue).
+- A terse / better-structured replacement.
+- Brief reason (optional, only if not obvious).
+
+# Guidelines
+
+## How the pack runs
+
+Each reviewer runs independently and reports findings without coordination. A reviewer's silence on something is not an endorsement — it just means that reviewer didn't see anything in its scope.
+
+**Per-reviewer file scope:**
+
+| Reviewer | Files in scope |
+|----------|----------------|
+| `test-coverage-reviewer` | `*.go` |
+| `error-handling-reviewer` | `*.go` |
+| `complexity-reviewer` | `*.go` (skips `*_test.go`) |
+| `concurrency-reviewer` | `*.go` touching `go`, `chan`, `select`, `sync.*`, or `context` |
+| `resource-leak-reviewer` | `*.go` |
+| `external-process-reviewer` | `*.go` touching `os/exec` |
+| `sql-injection-reviewer` | `*.go` DB code |
+| `dead-code-reviewer` | `*.go` |
+| `openapi-spec-reviewer` | `*.go` handler/route files, `openapi.yaml` |
+| `terraform-reviewer` | `terraform/**/*.tf` |
+| `clarity-reviewer` | `*.md`, `*.go` (comments only) |
+
+Skip reviewers whose file scope doesn't match the PR diff.
+
+## Tooling assumed in CI
+
+Reviewers do not duplicate work already done by CI. Each Go project running this pack should have these in CI:
+
+- `gofmt -l ./...` — empty output enforced
+- `go vet ./...`
+- `staticcheck ./...` (honnef.co/go/tools)
+- `go test -race -count=1 ./...` — race detector enabled
+- `gocognit -over 10 ./...` — cognitive complexity ceiling (see `complexity-reviewer`)
+- `deadcode ./...` from `golang.org/x/tools/cmd/deadcode` (see `dead-code-reviewer`)
+
+A missing tool is itself a **P1** finding on the first PR that brushes against its scope. For example, if CI doesn't run `-race` and the PR touches concurrent code, `concurrency-reviewer` flags the CI gap as well as the code.
+
+## Severity convention
+
+Every finding must be tagged with a beads-style priority:
+
+| Priority | Disposition | Examples |
+|----------|-------------|----------|
+| **P1** | Blocking — must fix before merge | Security issue, leak in long-running service, unsynchronized shared state, unjustified new mutex, goroutine leak, missing `-race` in CI |
+| **P2** | Should fix in this PR | Missing error wrap context, missing tests for new branches, missing `ctx` propagation, missing CLI timeout, gocognit floor violation |
+| **P3** | Advisory — deferrable with a beads ticket | Complexity heuristic findings, dead code, clarity nits, markdown structural suggestions |
+
+**Default severity per reviewer:**
+
+- `concurrency-reviewer`, `resource-leak-reviewer`: **P1** by default.
+- `sql-injection-reviewer`: **P1** by default (security finding).
+- `terraform-reviewer`: **P1** for layering violations / forbidden resource types; **P2** for hardcoded values or output-shape changes without coordinated `infra-frontend` changes.
+- `test-coverage-reviewer`, `error-handling-reviewer`, `external-process-reviewer`: **P2** by default; specific flags inside each reviewer may be P1.
+- `openapi-spec-reviewer`: **P2** by default (spec drift should be fixed in-PR).
+- `complexity-reviewer`: **P2** for gocognit floor violations; **P3** for heuristic findings.
+- `dead-code-reviewer`, `clarity-reviewer`: **P3** by default.
+
+A reviewer may promote or demote a specific finding from its default, but must state why.
+
+## Output format
+
+Findings must be structured. Use this template:
+
+```
+[<reviewer>] [<severity>] <one-line title>
+
+File: path/to/file.go:LINE
+Quote:
+    <1-5 lines of code or text being flagged>
+
+Issue: <one or two sentences on what's wrong>
+Suggested fix:
+    <concrete diff or rewritten code/text>
+Reason (optional): <only if not obvious>
+```
+
+Example:
+
+```
+[concurrency-reviewer] [P1] New sync.Mutex without justification
+
+File: internal/cache/cache.go:42
+Quote:
+    type cache struct {
+        mu sync.Mutex
+        m  map[string]int
+    }
+
+Issue: New mutex protects mutable shared state. Per the pack's design philosophy,
+mutexes are flagged by default — replace with channel-owned state unless this falls
+into "Tolerated uses of sync.*" in concurrency-reviewer.
+Suggested fix: A goroutine owns the map and accepts ops via channel. See the GOOD
+example in concurrency-reviewer.
+```
+
+Structured findings are diff-able, easy to triage, and easy to deduplicate when multiple reviewers flag the same line.
+
+## Deferring findings with beads
+
+To defer a P2 or P3 finding to a follow-up:
+
+1. Create a beads ticket capturing reviewer name, severity, file, and quote.
+2. Link the ticket in the PR description or as a reply to the reviewer's comment.
+3. The reviewer accepts the deferral only when the beads ticket exists.
+
+**P1 findings are not deferrable** — they must be fixed in-PR.
