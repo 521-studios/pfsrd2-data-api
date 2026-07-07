@@ -46,24 +46,17 @@ func evaluateValueFrom(statBlock map[string]any, expr string, minimum *float64) 
 			if !ok || divisor == 0 {
 				return nil, fmt.Errorf("invalid divisor in value_from: %s", op)
 			}
-			val, err := evaluateAggregateOp(statBlock, path, strings.TrimSpace(op[:opIdx]))
+			num, err := evaluateAggregateOp(statBlock, path, strings.TrimSpace(op[:opIdx]))
 			if err != nil {
 				return nil, err
 			}
-			num, ok := toFloat64(val)
-			if !ok {
-				return nil, fmt.Errorf("aggregate result not numeric in value_from: %s", expr)
-			}
 			return applyMinimum(divideToFive(num, divisor), minimum), nil
 		}
-		val, err := evaluateAggregateOp(statBlock, path, op)
+		num, err := evaluateAggregateOp(statBlock, path, op)
 		if err != nil {
 			return nil, err
 		}
-		if num, ok := toFloat64(val); ok {
-			return applyMinimum(num, minimum), nil
-		}
-		return val, nil
+		return applyMinimum(num, minimum), nil
 	}
 
 	if idx := strings.LastIndex(expr, " / "); idx >= 0 {
@@ -105,7 +98,7 @@ func applyMinimum(v float64, minimum *float64) float64 {
 	return v
 }
 
-func evaluateAggregateOp(statBlock map[string]any, path, op string) (any, error) {
+func evaluateAggregateOp(statBlock map[string]any, path, op string) (float64, error) {
 	switch op {
 	case "max":
 		return resolveAggregate(statBlock, path, math.Max)
@@ -114,7 +107,7 @@ func evaluateAggregateOp(statBlock map[string]any, path, op string) (any, error)
 	case "high_for_level":
 		return resolveHighForLevel(statBlock, path)
 	default:
-		return nil, fmt.Errorf("unknown value_from operator: %s", op)
+		return 0, fmt.Errorf("unknown value_from operator: %s", op)
 	}
 }
 

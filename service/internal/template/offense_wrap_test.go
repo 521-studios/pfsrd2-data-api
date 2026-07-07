@@ -309,6 +309,31 @@ func TestValueFromSentinelProducers(t *testing.T) {
 	}
 }
 
+func TestApplyEffect_ShapeSentinelWarnSkips(t *testing.T) {
+	// The warn-skip arm in applySingleEffect: a shape mismatch skips the
+	// effect without erroring and without mutating the stat block.
+	sb := map[string]any{
+		"offense": map[string]any{
+			"offensive_actions": []any{map[string]any{"attack": map[string]any{"damage": []any{
+				map[string]any{"formula": "1d6", "damage_type": "piercing"},
+			}}}},
+			"speed": map[string]any{"movement": []any{}},
+		},
+	}
+	eff := Effect{
+		Operation: "add_item", Target: "$.offense.speed.movement",
+		Item:      map[string]any{"movement_type": "burrow", "name": "burrow", "subtype": "speed", "type": "stat_block_section"},
+		ValueFrom: "$.offense.offensive_actions[*].attack.damage | min",
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("shape mismatch must warn-skip, got %v", err)
+	}
+	mv := sb["offense"].(map[string]any)["speed"].(map[string]any)["movement"].([]any)
+	if len(mv) != 0 {
+		t.Errorf("effect should have been skipped, movement = %v", mv)
+	}
+}
+
 func TestSetReach_NeverRaisesReach(t *testing.T) {
 	sb := map[string]any{
 		"offense": map[string]any{"offensive_actions": []any{
