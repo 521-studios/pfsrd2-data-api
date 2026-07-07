@@ -2,6 +2,7 @@ package template
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -427,10 +428,15 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	// Resolve computed values before applying
 	if eff.ValueFrom != "" {
 		computed, err := evaluateValueFrom(statBlock, eff.ValueFrom, eff.Minimum)
-		if err != nil {
-			// Non-fatal: creature may lack the field (e.g., no walk speed for swim-only creatures)
+		if errors.Is(err, ErrValueFromPath) {
+			// Non-fatal: creature lacks the field (e.g., no walk speed for
+			// swim-only creatures)
 			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
 			return nil
+		}
+		if err != nil {
+			// Malformed template expression — surface it, don't skip
+			return fmt.Errorf("value_from %q: %w", eff.ValueFrom, err)
 		}
 		if m := eff.ItemMap(); m != nil {
 			cp := make(map[string]any)

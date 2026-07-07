@@ -107,6 +107,9 @@ func TestSetReach_ReducesReachTraitOnMeleeAttack(t *testing.T) {
 	if reach["value"] != "5 feet" {
 		t.Errorf("reach value = %v", reach["value"])
 	}
+	if _, has := traits[1].(map[string]any)["value"]; has {
+		t.Errorf("non-Reach trait gained a value: %#v", traits[1])
+	}
 	// No Reach trait: untouched, and no stray fields added.
 	claw := oa[1].(map[string]any)["attack"].(map[string]any)
 	if !reflect.DeepEqual(claw["traits"], []any{}) {
@@ -221,12 +224,65 @@ func TestValueFromAggregateWithDivision(t *testing.T) {
 		},
 	}
 	got, err := evaluateValueFrom(sb, "$.offense.speed.movement[*].value | max / 2", nil)
-	if err != nil || got != float64(22) {
-		t.Errorf("got %v err %v want 22", got, err)
+	if err != nil || got != float64(20) {
+		t.Errorf("got %v err %v want 20 (5-foot floor)", got, err)
 	}
 	min := floatPtr(30)
 	got, err = evaluateValueFrom(sb, "$.offense.speed.movement[*].value | max / 2", min)
 	if err != nil || got != float64(30) {
 		t.Errorf("minimum not applied: got %v err %v", got, err)
+	}
+}
+
+func TestValueFromDivisionErrors(t *testing.T) {
+	sb := map[string]any{
+		"offense": map[string]any{"speed": map[string]any{"movement": []any{
+			map[string]any{"movement_type": "walk", "value": float64(25)},
+		}}},
+	}
+	for _, expr := range []string{
+		"$.offense.speed.movement[*].value | max / 0",
+		"$.offense.speed.movement[*].value | max / zero",
+		"$.offense.speed.movement[?(@.movement_type=='walk')].value / 0",
+	} {
+		if _, err := evaluateValueFrom(sb, expr, nil); err == nil {
+			t.Errorf("expected divisor error for %q", expr)
+		}
+	}
+}
+
+func TestValueFromTemplateErrorsPropagate(t *testing.T) {
+	// A malformed expression must fail the apply; a missing creature field
+	// must skip silently. The sentinel separates the two.
+	creature := map[string]any{"stat_block": map[string]any{
+		"creature_type": map[string]any{"level": float64(1)},
+		"senses":        map[string]any{},
+		"defense":       map[string]any{"hitpoints": []any{map[string]any{"hp": float64(10)}}},
+		"offense": map[string]any{
+			"offensive_actions": []any{},
+			"speed":             map[string]any{"movement": []any{map[string]any{"movement_type": "swim", "value": float64(30)}}},
+		},
+	}}
+	badTmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{Changes: []Change{{
+		ChangeCategory: "speed",
+		Effects: []Effect{{
+			Operation: "add_item", Target: "$.offense.speed.movement",
+			Item:      map[string]any{"movement_type": "burrow", "name": "burrow", "subtype": "speed", "type": "stat_block_section"},
+			ValueFrom: "$.offense.speed.movement[*].value | max / 0",
+		}},
+	}}}}
+	if _, err := Apply(creature, badTmpl); err == nil {
+		t.Error("malformed value_from must propagate")
+	}
+	missingTmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{Changes: []Change{{
+		ChangeCategory: "speed",
+		Effects: []Effect{{
+			Operation: "add_item", Target: "$.offense.speed.movement",
+			Item:      map[string]any{"movement_type": "swim2", "name": "swim2", "subtype": "speed", "type": "stat_block_section"},
+			ValueFrom: "$.offense.speed.movement[?(@.movement_type=='walk')].value / 2",
+		}},
+	}}}}
+	if _, err := Apply(creature, missingTmpl); err != nil {
+		t.Errorf("missing creature field must skip, got %v", err)
 	}
 }

@@ -1,18 +1,30 @@
 package template
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 )
+
+// ErrValueFromPath marks value_from failures caused by the creature lacking
+// the referenced data (a swim-only creature has no walk speed). Callers skip
+// these; every other value_from error is a malformed template and must
+// propagate.
+var ErrValueFromPath = errors.New("value_from path unavailable")
 
 // evaluateValueFrom resolves a value_from expression against the stat_block.
 // Supported forms:
 //
 //	$.path[*].field | max          — maximum of all resolved values
 //	$.path[*].field | min          — minimum of all resolved values
-//	$.path[?(@.x=='y')].field / 2 — single value divided by 2
+//	$.path[*].field | max / 2      — aggregate, then divide (5-foot floor)
+//	$.path[?(@.x=='y')].field / 2 — single value divided by 2 (5-foot floor)
 //	$.path | high_for_level        — lookup from building rules table
+//
+// The minimum applies to every numeric result. Divisions floor to the
+// nearest 5 feet — the PF2 halved-Speed convention, and both division
+// consumers are speeds.
 func evaluateValueFrom(statBlock map[string]any, expr string, minimum *float64) (any, error) {
 	expr = strings.TrimSpace(expr)
 
@@ -20,8 +32,7 @@ func evaluateValueFrom(statBlock map[string]any, expr string, minimum *float64) 
 	if idx := strings.LastIndex(expr, " | "); idx >= 0 {
 		path := strings.TrimSpace(expr[:idx])
 		op := strings.TrimSpace(expr[idx+3:])
-		// "max / 2" — aggregate then divide, flooring, with the minimum
-		// applied (sandbound: burrow = half the fastest speed)
+		// "max / 2" — aggregate then divide (sandbound: half the fastest speed)
 		if opIdx := strings.Index(op, " / "); opIdx >= 0 {
 			divisor, ok := toFloat64(parseRHS(op[opIdx+3:]))
 			if !ok || divisor == 0 {
@@ -35,39 +46,55 @@ func evaluateValueFrom(statBlock map[string]any, expr string, minimum *float64) 
 			if !ok {
 				return nil, fmt.Errorf("aggregate result not numeric in value_from: %s", expr)
 			}
-			result := math.Floor(num / divisor)
-			if minimum != nil && result < *minimum {
-				result = *minimum
-			}
-			return result, nil
+			return applyMinimum(divideToFive(num, divisor), minimum), nil
 		}
-		return evaluateAggregateOp(statBlock, path, op)
+		val, err := evaluateAggregateOp(statBlock, path, op)
+		if err != nil {
+			return nil, err
+		}
+		if num, ok := toFloat64(val); ok {
+			return applyMinimum(num, minimum), nil
+		}
+		return val, nil
 	}
 
 	if idx := strings.LastIndex(expr, " / "); idx >= 0 {
 		path := strings.TrimSpace(expr[:idx])
 		divisorStr := strings.TrimSpace(expr[idx+3:])
 		divisor, ok := toFloat64(parseRHS(divisorStr))
-		if !ok {
+		if !ok || divisor == 0 {
 			return nil, fmt.Errorf("invalid divisor in value_from: %s", divisorStr)
 		}
 		val, err := resolveSingleNumeric(statBlock, path)
 		if err != nil {
 			return nil, err
 		}
-		result := math.Floor(val / divisor)
-		if minimum != nil && result < *minimum {
-			result = *minimum
-		}
-		return result, nil
+		return applyMinimum(divideToFive(val, divisor), minimum), nil
 	}
 
 	// Plain path — resolve single value
 	val, ok := resolveScalar(statBlock, expr)
 	if !ok {
-		return nil, fmt.Errorf("value_from path not found: %s", expr)
+		return nil, fmt.Errorf("%w: %s", ErrValueFromPath, expr)
+	}
+	if num, numOk := toFloat64(val); numOk {
+		return applyMinimum(num, minimum), nil
 	}
 	return val, nil
+}
+
+// divideToFive divides and rounds down to the nearest 5 feet — the PF2
+// halved-Speed convention (both division consumers are speeds).
+func divideToFive(num, divisor float64) float64 {
+	return math.Floor(num/divisor/5) * 5
+}
+
+// applyMinimum clamps a numeric result up to the effect's minimum.
+func applyMinimum(v float64, minimum *float64) float64 {
+	if minimum != nil && v < *minimum {
+		return *minimum
+	}
+	return v
 }
 
 func evaluateAggregateOp(statBlock map[string]any, path, op string) (any, error) {
@@ -89,7 +116,7 @@ func resolveAggregate(statBlock map[string]any, path string, fn func(float64, fl
 		return 0, fmt.Errorf("resolve %q: %w", path, err)
 	}
 	if len(resolved) == 0 {
-		return 0, fmt.Errorf("no values at path %q", path)
+		return 0, fmt.Errorf("%w: no values at %q", ErrValueFromPath, path)
 	}
 
 	first := true
@@ -107,7 +134,7 @@ func resolveAggregate(statBlock map[string]any, path string, fn func(float64, fl
 		}
 	}
 	if first {
-		return 0, fmt.Errorf("no numeric values at path %q", path)
+		return 0, fmt.Errorf("%w: no numeric values at %q", ErrValueFromPath, path)
 	}
 	return result, nil
 }
@@ -118,11 +145,11 @@ func resolveSingleNumeric(statBlock map[string]any, path string) (float64, error
 		return 0, fmt.Errorf("resolve %q: %w", path, err)
 	}
 	if len(resolved) == 0 {
-		return 0, fmt.Errorf("no value at path %q", path)
+		return 0, fmt.Errorf("%w: no value at %q", ErrValueFromPath, path)
 	}
 	v, ok := toFloat64(resolved[0].Get())
 	if !ok {
-		return 0, fmt.Errorf("non-numeric value at path %q", path)
+		return 0, fmt.Errorf("%w: non-numeric value at %q", ErrValueFromPath, path)
 	}
 	return v, nil
 }
@@ -133,7 +160,7 @@ func resolveSingleNumeric(statBlock map[string]any, path string) (float64, error
 func resolveHighForLevel(statBlock map[string]any, _ string) (float64, error) {
 	level, ok := resolveScalar(statBlock, "$.creature_type.level")
 	if !ok {
-		return 0, fmt.Errorf("cannot determine creature level for high_for_level")
+		return 0, fmt.Errorf("%w: no creature level for high_for_level", ErrValueFromPath)
 	}
 	lvl, ok := toFloat64(level)
 	if !ok {
