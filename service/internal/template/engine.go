@@ -140,54 +140,84 @@ func synthesizeAbilitiesChange(abilities []any) Change {
 		Abilities:      abilities,
 	}
 	for _, a := range abilities {
-		name := abilityName(a)
-		target := abilityCategoryTargets["automatic"]
-		if m, ok := a.(map[string]any); ok {
-			if category, _ := m["ability_category"].(string); category != "" {
-				if t, known := abilityCategoryTargets[category]; known {
-					target = t
-				} else {
-					slog.Warn("unknown ability_category, defaulting to automatic_abilities",
-						"ability", name, "category", category)
-				}
-			} else if isKnownSpecialSense(name) {
-				target = abilityCategoryTargets["special_sense"]
-			} else {
-				slog.Warn("ability has no ability_category, defaulting to automatic_abilities",
-					"ability", name)
-			}
-		} else if isKnownSpecialSense(name) {
-			target = abilityCategoryTargets["special_sense"]
-		}
 		change.Effects = append(change.Effects, Effect{
 			Operation: "add_items",
 			Item:      a,
-			Target:    target,
+			Target:    targetForAbility(a),
 		})
 	}
 	return change
 }
 
+// targetForAbility routes one ability by its ability_category, falling back
+// to the known-sense name check and finally to automatic_abilities (with a
+// warning — a silent default would hide misrouted data).
+func targetForAbility(a any) string {
+	name := abilityName(a)
+	m, ok := a.(map[string]any)
+	if !ok {
+		if isKnownSpecialSense(name) {
+			return abilityCategoryTargets["special_sense"]
+		}
+		return abilityCategoryTargets["automatic"]
+	}
+	category, _ := m["ability_category"].(string)
+	if t, known := abilityCategoryTargets[category]; known {
+		return t
+	}
+	if category != "" {
+		slog.Warn("unknown ability_category, defaulting to automatic_abilities",
+			"ability", name, "category", category)
+		return abilityCategoryTargets["automatic"]
+	}
+	if isKnownSpecialSense(name) {
+		return abilityCategoryTargets["special_sense"]
+	}
+	slog.Warn("ability has no ability_category, defaulting to automatic_abilities",
+		"ability", name)
+	return abilityCategoryTargets["automatic"]
+}
+
+// effectConsumption classifies what one add_items effect picks up from the
+// ability pool: a single named ability (via Item or a name filter), every
+// ability (unfiltered, non-sense target — senses divert, the rest append),
+// or only the senses (unfiltered with a special_senses target, where
+// non-sense abilities are not added).
+func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
+	if eff.Item != nil {
+		return abilityName(eff.Item), false, false
+	}
+	if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
+		return m[1], false, false
+	}
+	if isSenseTarget(eff.Target) {
+		return "", false, true
+	}
+	return "", true, false
+}
+
 // warnUnconsumedAbilities logs pool abilities that no add_items effect can
-// pick up: no name filter selects them and no unfiltered add_items exists.
-// These are template-data gaps (or deliberate GM choice pools, like the Dark
-// Archive cryptids) — the engine surfaces them rather than guessing.
+// pick up — not named by an Item-carrying or filtered effect, and not swept
+// in by an unfiltered one. These are template-data gaps (or deliberate GM
+// choice pools, like the Dark Archive cryptids) — the engine surfaces them
+// rather than guessing.
 func warnUnconsumedAbilities(changes []Change, pool []any) {
 	consumedAll := false
+	sensesConsumed := false
 	consumed := map[string]bool{}
 	for _, c := range changes {
 		for _, eff := range c.Effects {
 			if eff.Operation != "add_items" {
 				continue
 			}
-			if eff.ItemMap() != nil || eff.ItemString() != "" {
-				consumed[strings.ToLower(abilityName(eff.Item))] = true
-				continue
-			}
-			if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
-				consumed[strings.ToLower(m[1])] = true
-			} else {
+			name, all, sensesOnly := effectConsumption(eff)
+			switch {
+			case name != "":
+				consumed[strings.ToLower(name)] = true
+			case all:
 				consumedAll = true
+			case sensesOnly:
+				sensesConsumed = true
 			}
 		}
 	}
@@ -195,9 +225,14 @@ func warnUnconsumedAbilities(changes []Change, pool []any) {
 		return
 	}
 	for _, a := range pool {
-		if name := abilityName(a); name != "" && !consumed[strings.ToLower(name)] {
-			slog.Warn("template ability not referenced by any add_items effect", "ability", name)
+		name := abilityName(a)
+		if name == "" || consumed[strings.ToLower(name)] {
+			continue
 		}
+		if sensesConsumed && isSenseAbility(a) {
+			continue
+		}
+		slog.Warn("template ability not referenced by any add_items effect", "ability", name)
 	}
 }
 
@@ -644,66 +679,84 @@ var sourceNameFilter = regexp.MustCompile(`\[\?\(@\.name=='([^']+)'\)\]`)
 
 const specialSensesTarget = "$.senses.special_senses"
 
-// collectPoolItems selects the abilities an add_items effect adds.
-// Selection order:
-//   - eff.Item set (synthesized changes): exactly that ability
-//   - name-filtered source: the matching pool abilities — the explicit
-//     filter wins over routing heuristics, wherever the target points;
-//     zero matches is a template-data error
-//   - unfiltered source: non-sense abilities go to the effect's target;
-//     known senses are diverted to special_senses (real creatures keep
-//     Darkvision there, and NPC Core templates target automatic_abilities
-//     with an unfiltered source)
-//
-// Returns items keyed by the target they belong on.
-func collectPoolItems(eff Effect, pool []any) (map[string][]any, error) {
-	senseTarget := eff.Target
-	if !strings.HasSuffix(eff.Target, "special_senses") {
-		senseTarget = specialSensesTarget
-	}
-	byTarget := map[string][]any{}
-	add := func(a any) {
-		switch {
-		case isKnownSpecialSense(abilityName(a)):
-			byTarget[senseTarget] = append(byTarget[senseTarget], abilityToSpecialSense(a))
-		case !strings.HasSuffix(eff.Target, "special_senses"):
-			byTarget[eff.Target] = append(byTarget[eff.Target], deepCopy(a))
-			// non-sense ability with a special_senses target: not added (a
-			// sense container only takes senses; unchanged prior behavior)
-		}
-	}
+// isSenseTarget reports whether a target path is a special_senses container.
+func isSenseTarget(target string) bool {
+	return strings.HasSuffix(target, "special_senses")
+}
 
-	if eff.Item != nil {
-		// Synthesized effect: the ability rides on the effect itself, and its
-		// target was already routed by ability_category — add it verbatim.
-		if strings.HasSuffix(eff.Target, "special_senses") {
-			byTarget[eff.Target] = []any{abilityToSpecialSense(eff.Item)}
-		} else {
-			byTarget[eff.Target] = []any{deepCopy(eff.Item)}
+// isSenseAbility reports whether an ability is a special sense — by its
+// ability_category when present, else by the known-sense name list. Both
+// signals matter: category-marked senses can have names outside the list
+// (Spiritsense-style), and change-level abilities often lack a category.
+func isSenseAbility(a any) bool {
+	if m, ok := a.(map[string]any); ok {
+		if category, _ := m["ability_category"].(string); category == "special_sense" {
+			return true
 		}
-		return byTarget, nil
 	}
-	if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
-		want := strings.ToLower(m[1])
-		for _, a := range pool {
-			if strings.ToLower(abilityName(a)) == want {
-				// Explicit filter: honor the effect's target as given.
-				if strings.HasSuffix(eff.Target, "special_senses") {
-					byTarget[eff.Target] = append(byTarget[eff.Target], abilityToSpecialSense(a))
-				} else {
-					byTarget[eff.Target] = append(byTarget[eff.Target], deepCopy(a))
-				}
-			}
-		}
-		if len(byTarget) == 0 {
-			return nil, fmt.Errorf("no template ability matches filter %q", m[1])
-		}
-		return byTarget, nil
+	return isKnownSpecialSense(abilityName(a))
+}
+
+// itemForTarget prepares one ability for insertion at target: sense
+// containers get the special_sense conversion, everything else a deep copy.
+func itemForTarget(a any, target string) any {
+	if isSenseTarget(target) {
+		return abilityToSpecialSense(a)
 	}
+	return deepCopy(a)
+}
+
+// filteredPoolItems selects pool abilities matching a name filter. The
+// explicit filter wins over routing heuristics, wherever the target points;
+// zero matches is a template-data error.
+func filteredPoolItems(pool []any, name, target string) (map[string][]any, error) {
+	want := strings.ToLower(name)
+	byTarget := map[string][]any{}
 	for _, a := range pool {
-		add(a)
+		if strings.ToLower(abilityName(a)) == want {
+			byTarget[target] = append(byTarget[target], itemForTarget(a, target))
+		}
+	}
+	if len(byTarget) == 0 {
+		return nil, fmt.Errorf("no template ability matches filter %q", name)
 	}
 	return byTarget, nil
+}
+
+// unfilteredPoolItems routes the whole pool: senses are diverted to
+// special_senses (real creatures keep Darkvision there, and NPC Core
+// templates target automatic_abilities with an unfiltered source), other
+// abilities go to the effect's target. A non-sense ability with a sense
+// target is not added — a sense container only takes senses.
+func unfilteredPoolItems(pool []any, target string) map[string][]any {
+	byTarget := map[string][]any{}
+	for _, a := range pool {
+		switch {
+		case isSenseAbility(a):
+			byTarget[specialSensesTarget] = append(byTarget[specialSensesTarget], abilityToSpecialSense(a))
+		case !isSenseTarget(target):
+			byTarget[target] = append(byTarget[target], deepCopy(a))
+		}
+	}
+	return byTarget
+}
+
+// collectPoolItems selects the abilities an add_items effect adds, keyed by
+// the target they belong on. Selection modes, in order: an ability carried
+// on eff.Item (synthesized changes, already routed by category); a
+// name-filtered source; an unfiltered source routing the whole pool.
+func collectPoolItems(eff Effect, pool []any) (map[string][]any, error) {
+	if eff.Item != nil {
+		return map[string][]any{eff.Target: {itemForTarget(eff.Item, eff.Target)}}, nil
+	}
+	if strings.Contains(eff.Source, "[?(") {
+		m := sourceNameFilter.FindStringSubmatch(eff.Source)
+		if m == nil {
+			return nil, fmt.Errorf("unparseable filter in add_items source %q", eff.Source)
+		}
+		return filteredPoolItems(pool, m[1], eff.Target)
+	}
+	return unfilteredPoolItems(pool, eff.Target), nil
 }
 
 // applyAddItems appends the abilities selected by collectPoolItems to their
@@ -723,7 +776,9 @@ func applyAddItems(statBlock map[string]any, eff Effect, pool []any) error {
 }
 
 // appendItemsAt appends items to the array(s) at target, creating the array
-// when absent and skipping items whose name already exists there.
+// when absent and skipping items whose name already exists there. Each
+// resolved location gets its own copy — a [*] target (e.g. multi-headed
+// creatures' hitpoints entries) must not share item maps across locations.
 func appendItemsAt(statBlock map[string]any, target string, items []any) error {
 	resolved, err := resolvePath(statBlock, target)
 	if err != nil {
@@ -732,17 +787,17 @@ func appendItemsAt(statBlock map[string]any, target string, items []any) error {
 	if len(resolved) == 0 {
 		resolved = resolveOrCreate(statBlock, target)
 	}
-	if len(items) == 0 {
-		return nil
-	}
 
-	for _, rv := range resolved {
+	for i, rv := range resolved {
 		current := rv.Get()
 		arr, ok := current.([]any)
 		if !ok {
 			arr = []any{}
 		}
 		for _, item := range items {
+			if i > 0 {
+				item = deepCopy(item)
+			}
 			name := abilityName(item)
 			if name == "" || !arrayContainsName(arr, name) {
 				arr = append(arr, item)

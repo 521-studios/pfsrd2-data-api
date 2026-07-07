@@ -411,3 +411,176 @@ func TestValueFromWalkSpeedNameIsBare(t *testing.T) {
 }
 
 func floatPtr(f float64) *float64 { return &f }
+
+func TestAddItems_CategoryMarkedSenseDivertsFromUnfiltered(t *testing.T) {
+	// A sense marked by ability_category but with a name outside the known
+	// list (Spiritsense-style) must divert like any sense on the unfiltered
+	// path — category and name-list signals are unified.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Spiritsense", "special_sense")},
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Spiritsense"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	if auto := sb["defense"].(map[string]any)["automatic_abilities"]; auto != nil {
+		t.Errorf("automatic_abilities should be empty, got %v", auto)
+	}
+}
+
+func TestAddItems_NonSenseNotAddedToSenseTarget(t *testing.T) {
+	// Unfiltered source with a special_senses target: non-sense abilities
+	// are not added there (or anywhere) — pinned so the guard can't silently
+	// become an append.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities: []any{
+				ability("Darkvision", "special_sense"),
+				ability("Frightful Moan", "offensive"),
+			},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.senses.special_senses",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Darkvision"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	off := namesOf(sb["offense"].(map[string]any)["offensive_actions"])
+	if len(off) != 0 {
+		t.Errorf("offensive_actions should be empty, got %v", off)
+	}
+}
+
+func TestAddItems_UnparseableFilterErrors(t *testing.T) {
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Darkvision", "special_sense")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    `$.changes[*].abilities[?(@.name=="Darkvision")]`,
+				Target:    "$.senses.special_senses",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Error("expected error for filter syntax the engine cannot parse")
+	}
+}
+
+func TestAddItems_NoAliasingAcrossWildcardTargets(t *testing.T) {
+	// hp_automatic abilities land on every hitpoints entry; the entries must
+	// not share one map (multi-headed creatures get later in-place edits).
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Void Healing", "hp_automatic")},
+	}}
+	sb := baseStatBlock()
+	sb["defense"].(map[string]any)["hitpoints"] = []any{
+		map[string]any{"hp": float64(30)},
+		map[string]any{"hp": float64(30)},
+	}
+	creature := map[string]any{"stat_block": sb}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	hps := resp.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["hitpoints"].([]any)
+	a0 := hps[0].(map[string]any)["automatic_abilities"].([]any)[0].(map[string]any)
+	a1 := hps[1].(map[string]any)["automatic_abilities"].([]any)[0].(map[string]any)
+	a0["name"] = "Mutated"
+	if a1["name"] != "Void Healing" {
+		t.Errorf("hitpoints entries share one ability map: %v", a1["name"])
+	}
+}
+
+func TestTargetForAbility_ResidualArms(t *testing.T) {
+	// String ability with a known sense name routes to special_senses;
+	// map ability with no category and a non-sense name defaults to
+	// automatic_abilities.
+	if got := targetForAbility("darkvision"); got != "$.senses.special_senses" {
+		t.Errorf("string sense -> %s", got)
+	}
+	if got := targetForAbility("mystery string"); got != "$.defense.automatic_abilities" {
+		t.Errorf("string non-sense -> %s", got)
+	}
+	noCat := map[string]any{"name": "Slam Door", "type": "stat_block_section"}
+	if got := targetForAbility(noCat); got != "$.defense.automatic_abilities" {
+		t.Errorf("no-category non-sense -> %s", got)
+	}
+}
+
+func TestEffectConsumption(t *testing.T) {
+	cases := []struct {
+		eff        Effect
+		name       string
+		all, sense bool
+	}{
+		{Effect{Item: ability("Howl", "offensive")}, "Howl", false, false},
+		{Effect{Source: "$.changes[*].abilities[?(@.name=='Stalk')]"}, "Stalk", false, false},
+		{Effect{Source: "$.changes[*].abilities", Target: "$.senses.special_senses"}, "", false, true},
+		{Effect{Source: "$.changes[*].abilities", Target: "$.defense.automatic_abilities"}, "", true, false},
+	}
+	for i, c := range cases {
+		name, all, sense := effectConsumption(c.eff)
+		if name != c.name || all != c.all || sense != c.sense {
+			t.Errorf("case %d: got (%q,%v,%v) want (%q,%v,%v)", i, name, all, sense, c.name, c.all, c.sense)
+		}
+	}
+}
+
+func TestAddItem_CreatesMissingTargetArray(t *testing.T) {
+	// add_item on an absent container must create it (the create-missing
+	// branch in applySingleEffect, post add_items interception).
+	sb := map[string]any{"offense": map[string]any{"speed": map[string]any{}}}
+	eff := Effect{
+		Operation: "add_item",
+		Target:    "$.offense.speed.movement",
+		Item: map[string]any{"movement_type": "swim", "name": "swim 15 feet",
+			"subtype": "speed", "type": "stat_block_section", "value": float64(15)},
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	mv := sb["offense"].(map[string]any)["speed"].(map[string]any)["movement"].([]any)
+	if len(mv) != 1 || mv[0].(map[string]any)["name"] != "swim 15 feet" {
+		t.Errorf("movement = %v", mv)
+	}
+}
+
+func TestAppendItemsAt_NonArrayTargetCoerced(t *testing.T) {
+	sb := map[string]any{"defense": map[string]any{"automatic_abilities": "oops"}}
+	if err := appendItemsAt(sb, "$.defense.automatic_abilities",
+		[]any{ability("Ferocity", "automatic")}); err != nil {
+		t.Fatalf("appendItemsAt: %v", err)
+	}
+	got := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(got, []string{"Ferocity"}) {
+		t.Errorf("automatic_abilities = %v", got)
+	}
+}
