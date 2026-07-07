@@ -737,17 +737,60 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 // diceFormula matches "NdX" with an optional flat modifier, e.g. "2d8+9".
 var diceFormula = regexp.MustCompile(`^(\d+)d(\d+)([+-]\d+)?$`)
 
+// diceCand is a damage entry eligible for conversion to the target type.
+type diceCand struct {
+	idx        int
+	m          map[string]any
+	count, die int
+	mod        string
+}
+
+// scanDiceCandidates walks a damage array and returns the entries eligible for
+// conversion to newType, plus the Strike's total die count for rule-branch
+// selection. Persistent and splash entries are riders, not the Strike's own
+// dice — they are skipped entirely. Entries already of the target type count
+// toward the total (the Strike does deal those dice) but are not candidates.
+// Atoi cannot fail here: diceFormula only captures digit runs, and real
+// formulas are far below the int range.
+func scanDiceCandidates(arr []any, newType string) (cands []diceCand, total int) {
+	for i, elem := range arr {
+		m, ok := elem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if p, _ := m["persistent"].(bool); p {
+			continue
+		}
+		if s, _ := m["splash"].(bool); s {
+			continue
+		}
+		f, _ := m["formula"].(string)
+		g := diceFormula.FindStringSubmatch(f)
+		if g == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(g[1])
+		total += n
+		if dt, _ := m["damage_type"].(string); dt == newType {
+			continue
+		}
+		die, _ := strconv.Atoi(g[2])
+		cands = append(cands, diceCand{idx: i, m: m, count: n, die: die, mod: g[3]})
+	}
+	return cands, total
+}
+
 // applyReplaceOneDie implements the elemental damage conversion rule:
 // "If the creature's Strikes deal more than one die of damage, change one die
 // to <type> damage. If not, add 1 <type> damage to its Strikes."
 //
-// Per damage array (one Strike): considering only non-persistent entries with
-// a parseable dice formula that aren't already the target type —
-//   - if an entry has 2+ dice, split one die off it (the flat modifier stays
-//     with the original entry) and insert the new-type die right after it
-//   - else if there are 2+ single-die entries, convert the last one's type
-//   - else if there is exactly one die total, append a flat 1 damage entry
-//   - no parseable dice (effect-only strikes) → no change
+// Per damage array (one Strike), with dice counted by scanDiceCandidates:
+//   - 2+ dice: split one die off the first 2+ die candidate (the flat
+//     modifier stays with the original entry, the new-type die is inserted
+//     right after it), or convert the last single-die candidate; a Strike
+//     whose dice are already all the target type is left unchanged
+//   - exactly one die: append a flat 1 damage entry
+//   - no dice (effect-only strikes) → no change
 func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	newType, ok := eff.Value.(string)
 	if !ok {
@@ -758,35 +801,7 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 		return nil
 	}
 
-	type cand struct {
-		idx        int
-		m          map[string]any
-		count, die int
-		mod        string
-	}
-	var cands []cand
-	total := 0
-	for i, elem := range arr {
-		m, ok := elem.(map[string]any)
-		if !ok {
-			continue
-		}
-		if p, _ := m["persistent"].(bool); p {
-			continue
-		}
-		if dt, _ := m["damage_type"].(string); dt == newType {
-			continue
-		}
-		f, _ := m["formula"].(string)
-		g := diceFormula.FindStringSubmatch(f)
-		if g == nil {
-			continue
-		}
-		n, _ := strconv.Atoi(g[1])
-		die, _ := strconv.Atoi(g[2])
-		cands = append(cands, cand{idx: i, m: m, count: n, die: die, mod: g[3]})
-		total += n
-	}
+	cands, total := scanDiceCandidates(arr, newType)
 	if total == 0 {
 		return nil
 	}
@@ -814,6 +829,9 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 			rv.Set(out)
 			return nil
 		}
+	}
+	if len(cands) == 0 {
+		return nil // 2+ dice but all already the target type
 	}
 	// 2+ dice but every candidate is a single die: convert the last one.
 	cands[len(cands)-1].m["damage_type"] = newType
