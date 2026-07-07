@@ -1,6 +1,7 @@
 package template
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -573,11 +574,88 @@ func TestAddItem_CreatesMissingTargetArray(t *testing.T) {
 	}
 }
 
+func TestAddItems_CaseFoldDedupOnDivertedSense(t *testing.T) {
+	// Templates carry "Darkvision"; parsed creatures store "darkvision".
+	// The case-insensitive dedup is load-bearing on the diverted-sense path.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Darkvision", "special_sense")},
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	sb := baseStatBlock()
+	sb["senses"] = map[string]any{"special_senses": []any{
+		map[string]any{"name": "darkvision", "subtype": "ability", "type": "stat_block_section"},
+	}}
+	creature := map[string]any{"stat_block": sb}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	senses := namesOf(resp.Creature["stat_block"].(map[string]any)["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"darkvision"}) {
+		t.Errorf("special_senses = %v (case-fold dedup failed)", senses)
+	}
+}
+
+func TestMonsterTemplateAbilitiesJSONTag(t *testing.T) {
+	// The abilities field's JSON boundary must survive without fixtures —
+	// fixture tests skip in CI, so this is the only tag guard CI sees.
+	raw := `{"name":"Tengu","monster_template":{"name":"Tengu","changes":[],
+		"abilities":[{"name":"Low-Light Vision","ability_category":"special_sense",
+		"type":"stat_block_section"}]}}`
+	var tmpl TemplateJSON
+	if err := json.Unmarshal([]byte(raw), &tmpl); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(tmpl.MonsterTemplate.Abilities) != 1 {
+		t.Fatalf("abilities not decoded: %+v", tmpl.MonsterTemplate)
+	}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	senses := namesOf(resp.Creature["stat_block"].(map[string]any)["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Low-Light Vision"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+}
+
+func TestAddItems_UnresolvableTargetErrors(t *testing.T) {
+	// A target that neither resolves nor can be created (zombie's old
+	// "$.stat_block.interaction_abilities" shape) must error, not silently
+	// drop the ability.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Slow", "automatic")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities[?(@.name=='Slow')]",
+				Target:    "$.stat_block.interaction_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Error("expected error for unresolvable add_items target")
+	}
+}
+
 func TestAppendItemsAt_NonArrayTargetCoerced(t *testing.T) {
 	sb := map[string]any{"defense": map[string]any{"automatic_abilities": "oops"}}
 	if err := appendItemsAt(sb, "$.defense.automatic_abilities",
 		[]any{ability("Ferocity", "automatic")}); err != nil {
 		t.Fatalf("appendItemsAt: %v", err)
+	}
+	if err := appendItemsAt(sb, "", []any{ability("X", "automatic")}); err == nil {
+		t.Error("expected resolve error for empty target path")
 	}
 	got := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
 	if !reflect.DeepEqual(got, []string{"Ferocity"}) {

@@ -28,15 +28,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 
 	var patches []PatchGroup
 
-	changes := tmpl.MonsterTemplate.Changes
-	pool := abilityPool(tmpl.MonsterTemplate)
-	if len(changes) == 0 && len(pool) > 0 {
-		// Ability-only templates (Twinned, Tengu, the mythic roles) carry no
-		// changes array — synthesize one that routes each ability by category.
-		changes = []Change{synthesizeAbilitiesChange(tmpl.MonsterTemplate.Abilities)}
-	} else {
-		warnUnconsumedAbilities(changes, pool)
-	}
+	changes, pool := effectiveChanges(tmpl.MonsterTemplate)
 
 	for _, change := range changes {
 		// Snapshot before this change category
@@ -107,6 +99,20 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 	}, nil
 }
 
+// effectiveChanges returns the changes to apply and the ability pool they
+// draw from. Ability-only templates (Twinned, Tengu, the mythic roles) carry
+// no changes array — they get a synthesized one routing each ability by
+// category; templates with changes get a warning for any pool ability no
+// effect consumes.
+func effectiveChanges(mt MonsterTemplate) ([]Change, []any) {
+	pool := abilityPool(mt)
+	if len(mt.Changes) == 0 && len(pool) > 0 {
+		return []Change{synthesizeAbilitiesChange(mt.Abilities)}, pool
+	}
+	warnUnconsumedAbilities(mt.Changes, pool)
+	return mt.Changes, pool
+}
+
 // abilityPool collects every ability a template defines, whether on a change
 // or at the monster_template level — add_items sources resolve against it.
 func abilityPool(mt MonsterTemplate) []any {
@@ -159,6 +165,8 @@ func targetForAbility(a any) string {
 		if isKnownSpecialSense(name) {
 			return abilityCategoryTargets["special_sense"]
 		}
+		slog.Warn("ability has no ability_category, defaulting to automatic_abilities",
+			"ability", name)
 		return abilityCategoryTargets["automatic"]
 	}
 	category, _ := m["ability_category"].(string)
@@ -182,18 +190,46 @@ func targetForAbility(a any) string {
 // ability pool: a single named ability (via Item or a name filter), every
 // ability (unfiltered, non-sense target — senses divert, the rest append),
 // or only the senses (unfiltered with a special_senses target, where
-// non-sense abilities are not added).
+// non-sense abilities are not added). An unparseable filter consumes
+// nothing — collectPoolItems rejects the same shape with an error.
 func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
 	if eff.Item != nil {
 		return abilityName(eff.Item), false, false
 	}
-	if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
-		return m[1], false, false
+	if strings.Contains(eff.Source, "[?(") {
+		if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
+			return m[1], false, false
+		}
+		return "", false, false
 	}
 	if isSenseTarget(eff.Target) {
 		return "", false, true
 	}
 	return "", true, false
+}
+
+// consumedFromChanges aggregates every add_items effect's consumption over a
+// template's changes: the set of individually named abilities, whether any
+// effect sweeps the whole pool, and whether any sweeps just the senses.
+func consumedFromChanges(changes []Change) (names map[string]bool, all, senses bool) {
+	names = map[string]bool{}
+	for _, c := range changes {
+		for _, eff := range c.Effects {
+			if eff.Operation != "add_items" {
+				continue
+			}
+			name, effAll, sensesOnly := effectConsumption(eff)
+			switch {
+			case name != "":
+				names[strings.ToLower(name)] = true
+			case effAll:
+				all = true
+			case sensesOnly:
+				senses = true
+			}
+		}
+	}
+	return names, all, senses
 }
 
 // warnUnconsumedAbilities logs pool abilities that no add_items effect can
@@ -202,26 +238,8 @@ func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
 // choice pools, like the Dark Archive cryptids) — the engine surfaces them
 // rather than guessing.
 func warnUnconsumedAbilities(changes []Change, pool []any) {
-	consumedAll := false
-	sensesConsumed := false
-	consumed := map[string]bool{}
-	for _, c := range changes {
-		for _, eff := range c.Effects {
-			if eff.Operation != "add_items" {
-				continue
-			}
-			name, all, sensesOnly := effectConsumption(eff)
-			switch {
-			case name != "":
-				consumed[strings.ToLower(name)] = true
-			case all:
-				consumedAll = true
-			case sensesOnly:
-				sensesConsumed = true
-			}
-		}
-	}
-	if consumedAll {
+	consumed, all, sensesConsumed := consumedFromChanges(changes)
+	if all {
 		return
 	}
 	for _, a := range pool {
@@ -708,19 +726,21 @@ func itemForTarget(a any, target string) any {
 
 // filteredPoolItems selects pool abilities matching a name filter. The
 // explicit filter wins over routing heuristics, wherever the target points;
-// zero matches is a template-data error.
+// zero matches is a template-data error. The result has a single key (the
+// given target) — the map shape exists to match collectPoolItems' by-target
+// contract.
 func filteredPoolItems(pool []any, name, target string) (map[string][]any, error) {
 	want := strings.ToLower(name)
-	byTarget := map[string][]any{}
+	var items []any
 	for _, a := range pool {
 		if strings.ToLower(abilityName(a)) == want {
-			byTarget[target] = append(byTarget[target], itemForTarget(a, target))
+			items = append(items, itemForTarget(a, target))
 		}
 	}
-	if len(byTarget) == 0 {
+	if len(items) == 0 {
 		return nil, fmt.Errorf("no template ability matches filter %q", name)
 	}
-	return byTarget, nil
+	return map[string][]any{target: items}, nil
 }
 
 // unfilteredPoolItems routes the whole pool: senses are diverted to
@@ -776,36 +796,50 @@ func applyAddItems(statBlock map[string]any, eff Effect, pool []any) error {
 }
 
 // appendItemsAt appends items to the array(s) at target, creating the array
-// when absent and skipping items whose name already exists there. Each
-// resolved location gets its own copy — a [*] target (e.g. multi-headed
-// creatures' hitpoints entries) must not share item maps across locations.
+// when absent and skipping items whose name already exists there. Locations
+// never share item maps — a [*] target (e.g. multi-headed creatures'
+// hitpoints entries) gets an independent copy per location. A target that
+// neither resolves nor can be created is a template-data error (a silent
+// no-op here loses abilities, as zombie's Slow once did).
 func appendItemsAt(statBlock map[string]any, target string, items []any) error {
 	resolved, err := resolvePath(statBlock, target)
 	if err != nil {
-		return fmt.Errorf("add_items resolve target: %w", err)
+		return fmt.Errorf("resolve add_items target %q: %w", target, err)
 	}
 	if len(resolved) == 0 {
 		resolved = resolveOrCreate(statBlock, target)
 	}
+	if len(resolved) == 0 {
+		return fmt.Errorf("add_items target %q does not resolve and cannot be created", target)
+	}
 
 	for i, rv := range resolved {
-		current := rv.Get()
-		arr, ok := current.([]any)
-		if !ok {
-			arr = []any{}
-		}
-		for _, item := range items {
-			if i > 0 {
-				item = deepCopy(item)
-			}
-			name := abilityName(item)
-			if name == "" || !arrayContainsName(arr, name) {
-				arr = append(arr, item)
+		batch := items
+		if i > 0 {
+			batch = make([]any, len(items))
+			for j, item := range items {
+				batch[j] = deepCopy(item)
 			}
 		}
-		rv.Set(arr)
+		appendMissing(rv, batch)
 	}
 	return nil
+}
+
+// appendMissing appends items whose names aren't already present in the
+// array at rv, coercing a non-array value to a fresh array.
+func appendMissing(rv ResolvedValue, items []any) {
+	arr, ok := rv.Get().([]any)
+	if !ok {
+		arr = []any{}
+	}
+	for _, item := range items {
+		name := abilityName(item)
+		if name == "" || !arrayContainsName(arr, name) {
+			arr = append(arr, item)
+		}
+	}
+	rv.Set(arr)
 }
 
 // applyAddItem appends an item to the target array.
