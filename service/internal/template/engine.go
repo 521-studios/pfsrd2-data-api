@@ -723,12 +723,39 @@ func isSenseAbility(a any) bool {
 }
 
 // itemForTarget prepares one ability for insertion at target: sense
-// containers get the special_sense conversion, everything else a deep copy.
+// containers get the special_sense conversion, offensive_actions get the
+// display wrapper, everything else a deep copy.
 func itemForTarget(a any, target string) any {
 	if isSenseTarget(target) {
 		return abilityToSpecialSense(a)
 	}
+	if strings.HasSuffix(target, "offensive_actions") {
+		return wrapOffensiveAbility(a)
+	}
 	return deepCopy(a)
+}
+
+// wrapOffensiveAbility wraps a plain ability in the offensive_action entry
+// shape real creatures use ({name, ability, offensive_action_type}); the
+// display layer renders wrappers, not bare abilities. Items already carrying
+// an ability/attack/spells key are wrappers and pass through unchanged.
+func wrapOffensiveAbility(a any) any {
+	m, ok := a.(map[string]any)
+	if !ok {
+		return deepCopy(a)
+	}
+	for _, k := range []string{"ability", "attack", "spells"} {
+		if _, wrapped := m[k]; wrapped {
+			return deepCopy(a)
+		}
+	}
+	return map[string]any{
+		"name":                  abilityName(a),
+		"ability":               deepCopy(a),
+		"offensive_action_type": "ability",
+		"subtype":               "offensive_action",
+		"type":                  "stat_block_section",
+	}
 }
 
 // filteredPoolItems selects pool abilities matching a name filter. The
@@ -762,7 +789,7 @@ func unfilteredPoolItems(pool []any, target string) map[string][]any {
 		case isSenseAbility(a):
 			byTarget[specialSensesTarget] = append(byTarget[specialSensesTarget], abilityToSpecialSense(a))
 		case !isSenseTarget(target):
-			byTarget[target] = append(byTarget[target], deepCopy(a))
+			byTarget[target] = append(byTarget[target], itemForTarget(a, target))
 		}
 	}
 	return byTarget
@@ -1130,16 +1157,32 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
-// applySetReach sets the reach value on attacks.
-// Used by Miniature template.
+// applySetReach reduces an attack's Reach trait to the effect's value in
+// feet (Miniature semantics: notable-reach melee Strikes drop to 5 feet).
+// Attacks without a Reach trait are untouched — their reach is implied by
+// the creature's size, not stored on the attack.
 func applySetReach(rv ResolvedValue, eff Effect) error {
-	current := rv.Get()
-	m, ok := current.(map[string]any)
+	attack, ok := rv.Get().(map[string]any)
 	if !ok {
 		return nil
 	}
-	m["reach"] = eff.Value
-	rv.Set(m)
+	v, ok := toFloat64(eff.Value)
+	if !ok {
+		return fmt.Errorf("set_reach: value must be numeric, got %T", eff.Value)
+	}
+	feet := fmt.Sprintf("%d feet", int(v))
+	traits, _ := attack["traits"].([]any)
+	for _, tr := range traits {
+		m, ok := tr.(map[string]any)
+		if !ok || m["name"] != "Reach" {
+			continue
+		}
+		old, _ := m["value"].(string)
+		m["value"] = feet
+		if txt, ok := m["text"].(string); ok && old != "" {
+			m["text"] = strings.ReplaceAll(txt, old, feet)
+		}
+	}
 	return nil
 }
 
