@@ -10,9 +10,12 @@ type TemplateJSON struct {
 }
 
 // MonsterTemplate is the nested object containing the changes array.
+// Some templates (NPC Core ancestries, War of Immortals mythic, Twinned)
+// keep their ability definitions at this level rather than on a change.
 type MonsterTemplate struct {
 	Name        string   `json:"name"`
 	Changes     []Change `json:"changes"`
+	Abilities   []any    `json:"abilities,omitempty"`
 	Adjustments []any    `json:"adjustments,omitempty"`
 }
 

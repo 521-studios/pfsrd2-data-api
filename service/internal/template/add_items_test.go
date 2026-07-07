@@ -1,0 +1,229 @@
+package template
+
+import (
+	"reflect"
+	"testing"
+)
+
+func ability(name, category string) map[string]any {
+	return map[string]any{
+		"ability_category": category,
+		"ability_type":     "ability",
+		"name":             name,
+		"type":             "stat_block_section",
+	}
+}
+
+func baseStatBlock() map[string]any {
+	return map[string]any{
+		"creature_type": map[string]any{"level": float64(3)},
+		"senses":        map[string]any{},
+		"defense": map[string]any{
+			"hitpoints": []any{map[string]any{"hp": float64(30)}},
+		},
+		"offense": map[string]any{"offensive_actions": []any{}},
+	}
+}
+
+func namesOf(v any) []string {
+	arr, _ := v.([]any)
+	var out []string
+	for _, e := range arr {
+		if m, ok := e.(map[string]any); ok {
+			out = append(out, m["name"].(string))
+		}
+	}
+	return out
+}
+
+func TestAddItems_TopLevelAbilitiesPool(t *testing.T) {
+	// NPC Core shape: abilities at monster_template.abilities, source still
+	// says $.changes[*].abilities — the pool must cover both.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Low-Light Vision", "special_sense")},
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.senses.special_senses",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	got := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(got, []string{"Low-Light Vision"}) {
+		t.Errorf("special_senses = %v", got)
+	}
+}
+
+func TestAddItems_MultiEffectGroupSameTarget(t *testing.T) {
+	// Frostbound shape: several add_items effects sharing one target used to
+	// fall through to "unsupported operation: add_items".
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities: []any{
+				ability("Freezing Adaptation", "automatic"),
+				ability("Winter Senses", "automatic"),
+				ability("Snow Spray", "offensive"),
+			},
+			Effects: []Effect{
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Freezing Adaptation')]", Target: "$.defense.automatic_abilities"},
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Winter Senses')]", Target: "$.defense.automatic_abilities"},
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Snow Spray')]", Target: "$.offense.offensive_actions"},
+			},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	auto := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(auto, []string{"Freezing Adaptation", "Winter Senses"}) {
+		t.Errorf("automatic_abilities = %v", auto)
+	}
+	off := namesOf(sb["offense"].(map[string]any)["offensive_actions"])
+	if !reflect.DeepEqual(off, []string{"Snow Spray"}) {
+		t.Errorf("offensive_actions = %v", off)
+	}
+}
+
+func TestAddItems_SourceFilterKeepsSenseOutOfWrongTarget(t *testing.T) {
+	// A name filter is explicit: it must select exactly that ability even when
+	// the unfiltered routing heuristic would have excluded it (a known sense
+	// added to a non-sense container stays where the filter put it).
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities: []any{
+				ability("Darkvision", "special_sense"),
+				ability("Ghostly Passage", "offensive"),
+			},
+			Effects: []Effect{
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Darkvision')]", Target: "$.senses.special_senses"},
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Ghostly Passage')]", Target: "$.offense.offensive_actions"},
+			},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Darkvision"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	off := namesOf(sb["offense"].(map[string]any)["offensive_actions"])
+	if !reflect.DeepEqual(off, []string{"Ghostly Passage"}) {
+		t.Errorf("offensive_actions = %v", off)
+	}
+}
+
+func TestAddItems_ImplicitChangeForAbilityOnlyTemplate(t *testing.T) {
+	// Twinned/Tengu/Mythic shape: no changes at all, only top-level abilities.
+	// The engine synthesizes an abilities change routed by ability_category.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{
+			ability("Independent Brains", "interaction"),
+			ability("Head Bite", "reactive"),
+			ability("Void Healing", "hp_automatic"),
+			ability("Keen Eyes", "special_sense"),
+			ability("Twin Strike", "offensive"),
+		},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	def := sb["defense"].(map[string]any)
+	if got := namesOf(sb["interaction_abilities"]); !reflect.DeepEqual(got, []string{"Independent Brains"}) {
+		t.Errorf("interaction_abilities = %v", got)
+	}
+	if got := namesOf(def["reactive_abilities"]); !reflect.DeepEqual(got, []string{"Head Bite"}) {
+		t.Errorf("reactive_abilities = %v", got)
+	}
+	hp := def["hitpoints"].([]any)[0].(map[string]any)
+	if got := namesOf(hp["automatic_abilities"]); !reflect.DeepEqual(got, []string{"Void Healing"}) {
+		t.Errorf("hitpoints automatic_abilities = %v", got)
+	}
+	if got := namesOf(sb["senses"].(map[string]any)["special_senses"]); !reflect.DeepEqual(got, []string{"Keen Eyes"}) {
+		t.Errorf("special_senses = %v", got)
+	}
+	if got := namesOf(sb["offense"].(map[string]any)["offensive_actions"]); !reflect.DeepEqual(got, []string{"Twin Strike"}) {
+		t.Errorf("offensive_actions = %v", got)
+	}
+	if len(resp.PatchDoc.AppliedPatches) == 0 {
+		t.Error("expected patches from the synthesized change")
+	}
+}
+
+func TestAddItems_DedupAgainstExisting(t *testing.T) {
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Ferocity", "automatic")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities[?(@.name=='Ferocity')]",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	sb := baseStatBlock()
+	sb["defense"].(map[string]any)["automatic_abilities"] = []any{ability("Ferocity", "automatic")}
+	creature := map[string]any{"stat_block": sb}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got := namesOf(resp.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(got, []string{"Ferocity"}) {
+		t.Errorf("expected dedup, got %v", got)
+	}
+}
+
+func TestValueFromSpeedItemGetsNamed(t *testing.T) {
+	// Amphibious/Winged shape: a speed item added via value_from must carry a
+	// display name with the computed distance ("swim 15 feet", not "swim").
+	sb := map[string]any{
+		"offense": map[string]any{
+			"speed": map[string]any{
+				"movement": []any{
+					map[string]any{"movement_type": "walk", "name": "25 feet", "value": float64(25),
+						"subtype": "speed", "type": "stat_block_section"},
+				},
+			},
+		},
+	}
+	eff := Effect{
+		Operation:   "add_item",
+		Target:      "$.offense.speed.movement",
+		Conditional: "$.offense.speed.movement[?(@.movement_type=='swim')] == null",
+		Item: map[string]any{"movement_type": "swim", "name": "swim",
+			"subtype": "speed", "type": "stat_block_section"},
+		ValueFrom: "$.offense.speed.movement[?(@.movement_type=='walk')].value / 2",
+		Minimum:   floatPtr(15),
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	mv := sb["offense"].(map[string]any)["speed"].(map[string]any)["movement"].([]any)
+	added := mv[len(mv)-1].(map[string]any)
+	if added["name"] != "swim 15 feet" || added["value"] != float64(15) {
+		t.Errorf("added speed entry = %#v", added)
+	}
+}
+
+func floatPtr(f float64) *float64 { return &f }
