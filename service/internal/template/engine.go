@@ -734,28 +734,89 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
-// applyReplaceOneDie changes one damage die type in a formula string.
-// Used by Fire elemental template to change one damage die to fire.
-func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
-	current := rv.Get()
-	arr, ok := current.([]any)
-	if !ok {
-		return nil
-	}
-	if len(arr) == 0 {
-		return nil
-	}
+// diceFormula matches "NdX" with an optional flat modifier, e.g. "2d8+9".
+var diceFormula = regexp.MustCompile(`^(\d+)d(\d+)([+-]\d+)?$`)
 
-	// Replace the damage type of the first damage entry
-	m, ok := arr[0].(map[string]any)
-	if !ok {
-		return nil
-	}
+// applyReplaceOneDie implements the elemental damage conversion rule:
+// "If the creature's Strikes deal more than one die of damage, change one die
+// to <type> damage. If not, add 1 <type> damage to its Strikes."
+//
+// Per damage array (one Strike): considering only non-persistent entries with
+// a parseable dice formula that aren't already the target type —
+//   - if an entry has 2+ dice, split one die off it (the flat modifier stays
+//     with the original entry) and insert the new-type die right after it
+//   - else if there are 2+ single-die entries, convert the last one's type
+//   - else if there is exactly one die total, append a flat 1 damage entry
+//   - no parseable dice (effect-only strikes) → no change
+func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	newType, ok := eff.Value.(string)
 	if !ok {
 		return fmt.Errorf("replace_one_die: value must be a string, got %T", eff.Value)
 	}
-	m["damage_type"] = newType
+	arr, ok := rv.Get().([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+
+	type cand struct {
+		idx        int
+		m          map[string]any
+		count, die int
+		mod        string
+	}
+	var cands []cand
+	total := 0
+	for i, elem := range arr {
+		m, ok := elem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if p, _ := m["persistent"].(bool); p {
+			continue
+		}
+		if dt, _ := m["damage_type"].(string); dt == newType {
+			continue
+		}
+		f, _ := m["formula"].(string)
+		g := diceFormula.FindStringSubmatch(f)
+		if g == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(g[1])
+		die, _ := strconv.Atoi(g[2])
+		cands = append(cands, cand{idx: i, m: m, count: n, die: die, mod: g[3]})
+		total += n
+	}
+	if total == 0 {
+		return nil
+	}
+
+	newEntry := func(formula string) map[string]any {
+		return map[string]any{
+			"damage_type": newType,
+			"formula":     formula,
+			"subtype":     "attack_damage",
+			"type":        "stat_block_section",
+		}
+	}
+
+	if total == 1 {
+		rv.Set(append(arr, newEntry("1")))
+		return nil
+	}
+	for _, c := range cands {
+		if c.count >= 2 {
+			c.m["formula"] = fmt.Sprintf("%dd%d%s", c.count-1, c.die, c.mod)
+			out := make([]any, 0, len(arr)+1)
+			out = append(out, arr[:c.idx+1]...)
+			out = append(out, newEntry(fmt.Sprintf("1d%d", c.die)))
+			out = append(out, arr[c.idx+1:]...)
+			rv.Set(out)
+			return nil
+		}
+	}
+	// 2+ dice but every candidate is a single die: convert the last one.
+	cands[len(cands)-1].m["damage_type"] = newType
 	return nil
 }
 
