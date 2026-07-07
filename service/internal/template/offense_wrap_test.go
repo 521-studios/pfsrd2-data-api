@@ -66,7 +66,7 @@ func TestAddItems_AlreadyWrappedOffensiveEntryUntouched(t *testing.T) {
 
 func TestSetReach_ReducesReachTraitOnMeleeAttack(t *testing.T) {
 	// Miniature semantics: a melee attack with a Reach trait has its value
-	// reduced to the effect's value in feet; the trait text updates too.
+	// reduced to the effect's value in feet.
 	sb := map[string]any{
 		"offense": map[string]any{
 			"offensive_actions": []any{
@@ -124,8 +124,9 @@ func TestSetReach_NonMapTargetNoOp(t *testing.T) {
 	}
 }
 
-func TestSetReach_TextMentionUpdated(t *testing.T) {
-	// If the Reach trait carries a display text, it follows the value.
+func TestSetReach_TextUntouched(t *testing.T) {
+	// Reach trait text is glossary rules prose — set_reach must not
+	// rewrite it (substring replacement corrupts real texts).
 	sb := map[string]any{
 		"offense": map[string]any{
 			"offensive_actions": []any{
@@ -151,7 +152,81 @@ func TestSetReach_TextMentionUpdated(t *testing.T) {
 		t.Fatalf("applyEffectGroup: %v", err)
 	}
 	tr := sb["offense"].(map[string]any)["offensive_actions"].([]any)[0].(map[string]any)["attack"].(map[string]any)["traits"].([]any)[0].(map[string]any)
-	if tr["value"] != "5 feet" || !strings.Contains(tr["text"].(string), "5 feet") {
-		t.Errorf("trait = %#v", tr)
+	if tr["value"] != "5 feet" || tr["text"] != "Reach 15 feet" {
+		t.Errorf("trait = %#v (text must be untouched)", tr)
+	}
+}
+
+func TestSetReach_NonNumericValueErrors(t *testing.T) {
+	rv := ResolvedValue{}
+	err := applySetReach(rv, Effect{Operation: "set_reach", Value: "five"})
+	if err == nil || !strings.Contains(err.Error(), "must be numeric") {
+		t.Errorf("want numeric-value error even for nil targets, got %v", err)
+	}
+}
+
+func TestWrapOffensiveAbility_PassthroughKeys(t *testing.T) {
+	for _, k := range []string{"ability", "attack", "spells", "mythic_ability"} {
+		item := map[string]any{"name": "X", k: map[string]any{"name": "X"}}
+		got := wrapOffensiveAbility(item).(map[string]any)
+		if _, doubled := got["ability"].(map[string]any); doubled && k != "ability" {
+			t.Errorf("key %s: wrapper was wrapped again: %#v", k, got)
+		}
+		if k == "ability" {
+			if _, inner := got["ability"].(map[string]any)["ability"]; inner {
+				t.Errorf("ability wrapper double-wrapped")
+			}
+		}
+	}
+	if got := wrapOffensiveAbility("bare string"); got != "bare string" {
+		t.Errorf("non-map input should pass through, got %#v", got)
+	}
+}
+
+func TestAddItems_UnfilteredOffensiveRouteWraps(t *testing.T) {
+	// The unfiltered source route must wrap bare offensive abilities too.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Sand Burst", "offensive")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.offense.offensive_actions",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	oa := resp.Creature["stat_block"].(map[string]any)["offense"].(map[string]any)["offensive_actions"].([]any)
+	w := oa[0].(map[string]any)
+	if _, ok := w["ability"].(map[string]any); !ok || w["offensive_action_type"] != "ability" {
+		t.Errorf("unfiltered route did not wrap: %#v", w)
+	}
+}
+
+func TestValueFromAggregateWithDivision(t *testing.T) {
+	// sandbound: burrow speed = half the fastest speed, floored.
+	sb := map[string]any{
+		"offense": map[string]any{
+			"speed": map[string]any{
+				"movement": []any{
+					map[string]any{"movement_type": "walk", "value": float64(25)},
+					map[string]any{"movement_type": "fly", "value": float64(45)},
+				},
+			},
+		},
+	}
+	got, err := evaluateValueFrom(sb, "$.offense.speed.movement[*].value | max / 2", nil)
+	if err != nil || got != float64(22) {
+		t.Errorf("got %v err %v want 22", got, err)
+	}
+	min := floatPtr(30)
+	got, err = evaluateValueFrom(sb, "$.offense.speed.movement[*].value | max / 2", min)
+	if err != nil || got != float64(30) {
+		t.Errorf("minimum not applied: got %v err %v", got, err)
 	}
 }

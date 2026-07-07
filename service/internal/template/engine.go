@@ -738,13 +738,14 @@ func itemForTarget(a any, target string) any {
 // wrapOffensiveAbility wraps a plain ability in the offensive_action entry
 // shape real creatures use ({name, ability, offensive_action_type}); the
 // display layer renders wrappers, not bare abilities. Items already carrying
-// an ability/attack/spells key are wrappers and pass through unchanged.
+// a payload key (ability/attack/spells/mythic_ability) are wrappers and pass
+// through unchanged.
 func wrapOffensiveAbility(a any) any {
 	m, ok := a.(map[string]any)
 	if !ok {
 		return deepCopy(a)
 	}
-	for _, k := range []string{"ability", "attack", "spells"} {
+	for _, k := range []string{"ability", "attack", "spells", "mythic_ability"} {
 		if _, wrapped := m[k]; wrapped {
 			return deepCopy(a)
 		}
@@ -1160,27 +1161,22 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 // applySetReach reduces an attack's Reach trait to the effect's value in
 // feet (Miniature semantics: notable-reach melee Strikes drop to 5 feet).
 // Attacks without a Reach trait are untouched — their reach is implied by
-// the creature's size, not stored on the attack.
+// the creature's size, not stored on the attack. Only the trait's value is
+// rewritten: its text is glossary rules prose, not a value display.
 func applySetReach(rv ResolvedValue, eff Effect) error {
+	v, ok := toFloat64(eff.Value)
+	if !ok {
+		return fmt.Errorf("set_reach: value must be numeric, got %T (%v)", eff.Value, eff.Value)
+	}
 	attack, ok := rv.Get().(map[string]any)
 	if !ok {
 		return nil
 	}
-	v, ok := toFloat64(eff.Value)
-	if !ok {
-		return fmt.Errorf("set_reach: value must be numeric, got %T", eff.Value)
-	}
 	feet := fmt.Sprintf("%d feet", int(v))
 	traits, _ := attack["traits"].([]any)
 	for _, tr := range traits {
-		m, ok := tr.(map[string]any)
-		if !ok || m["name"] != "Reach" {
-			continue
-		}
-		old, _ := m["value"].(string)
-		m["value"] = feet
-		if txt, ok := m["text"].(string); ok && old != "" {
-			m["text"] = strings.ReplaceAll(txt, old, feet)
+		if m, ok := tr.(map[string]any); ok && m["name"] == "Reach" {
+			m["value"] = feet
 		}
 	}
 	return nil

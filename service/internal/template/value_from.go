@@ -20,6 +20,27 @@ func evaluateValueFrom(statBlock map[string]any, expr string, minimum *float64) 
 	if idx := strings.LastIndex(expr, " | "); idx >= 0 {
 		path := strings.TrimSpace(expr[:idx])
 		op := strings.TrimSpace(expr[idx+3:])
+		// "max / 2" — aggregate then divide, flooring, with the minimum
+		// applied (sandbound: burrow = half the fastest speed)
+		if opIdx := strings.Index(op, " / "); opIdx >= 0 {
+			divisor, ok := toFloat64(parseRHS(op[opIdx+3:]))
+			if !ok || divisor == 0 {
+				return nil, fmt.Errorf("invalid divisor in value_from: %s", op)
+			}
+			val, err := evaluateAggregateOp(statBlock, path, strings.TrimSpace(op[:opIdx]))
+			if err != nil {
+				return nil, err
+			}
+			num, ok := toFloat64(val)
+			if !ok {
+				return nil, fmt.Errorf("aggregate result not numeric in value_from: %s", expr)
+			}
+			result := math.Floor(num / divisor)
+			if minimum != nil && result < *minimum {
+				result = *minimum
+			}
+			return result, nil
+		}
 		return evaluateAggregateOp(statBlock, path, op)
 	}
 
