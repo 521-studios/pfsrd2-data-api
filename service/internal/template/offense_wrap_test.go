@@ -314,6 +314,12 @@ func TestValueFromSentinelProducers(t *testing.T) {
 	if !errorsIs(err, ErrValueFromPath) {
 		t.Errorf("missing level: got %v want path sentinel", err)
 	}
+	// an unknown aggregate operator is a malformed template: hard error,
+	// never a sentinel skip
+	_, err = evaluateValueFrom(sb, "$.statistics.skills[*].value | median", nil)
+	if err == nil || errorsIs(err, ErrValueFromPath) || errorsIs(err, ErrValueFromShape) {
+		t.Errorf("unknown operator: got %v want non-sentinel error", err)
+	}
 }
 
 func TestApplyEffect_ShapeSentinelWarnSkips(t *testing.T) {
