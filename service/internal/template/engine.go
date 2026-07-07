@@ -496,6 +496,8 @@ func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) erro
 		return applyReplaceOneDie(rv, eff)
 	case "set_reach":
 		return applySetReach(rv, eff)
+	case "add_strike":
+		return applyAddStrike(rv, eff)
 	case "remove_all_except":
 		return applyRemoveAllExcept(rv, eff)
 	case "size_increment":
@@ -1202,6 +1204,191 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 		m["value"] = feet
 	}
 	return nil
+}
+
+// averageDamage returns the expected value of a dice formula ("2d8+4" →
+// 13); flat numbers return themselves, unparseable formulas return -1 so
+// they never win the lowest-strike comparison. Atoi cannot fail on the
+// regex captures: diceFormula only captures digit runs (with an optional
+// sign), far below the int range.
+func averageDamage(formula string) float64 {
+	if g := diceFormula.FindStringSubmatch(formula); g != nil {
+		n, _ := strconv.Atoi(g[1])
+		die, _ := strconv.Atoi(g[2])
+		mod := 0
+		if g[3] != "" {
+			mod, _ = strconv.Atoi(g[3])
+		}
+		return float64(n)*(float64(die)+1)/2 + float64(mod)
+	}
+	if v, err := strconv.Atoi(formula); err == nil {
+		return float64(v)
+	}
+	return -1
+}
+
+// lowestMeleeStrike returns the wrapper of the melee attack with the lowest
+// first-damage-entry average, or nil when the creature has no melee Strikes.
+func lowestMeleeStrike(actions []any) map[string]any {
+	var best map[string]any
+	bestAvg := 0.0
+	for _, a := range actions {
+		w, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		atk, ok := w["attack"].(map[string]any)
+		if !ok || atk["attack_type"] != "melee" {
+			continue
+		}
+		dmg, _ := atk["damage"].([]any)
+		if len(dmg) == 0 {
+			continue
+		}
+		first, _ := dmg[0].(map[string]any)
+		f, _ := first["formula"].(string)
+		avg := averageDamage(f)
+		if avg < 0 {
+			continue
+		}
+		if best == nil || avg < bestAvg {
+			best, bestAvg = w, avg
+		}
+	}
+	return best
+}
+
+// weaponContains reports whether weapon wp contains want as a contiguous
+// word sequence, case-insensitively: "snake fangs" contains "fangs",
+// "+1 clan dagger" contains "clan dagger".
+func weaponContains(wp, want string) bool {
+	wpWords := strings.Fields(strings.ToLower(wp))
+	wantWords := strings.Fields(strings.ToLower(want))
+	if len(wantWords) == 0 || len(wpWords) < len(wantWords) {
+		return false
+	}
+	for i := 0; i+len(wantWords) <= len(wpWords); i++ {
+		match := true
+		for j := range wantWords {
+			if wpWords[i+j] != wantWords[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWeapon reports whether any attack in actions uses one of the weapons —
+// a creature with "snake fangs" or "+1 clan dagger" already has fangs /
+// a clan dagger for dedup purposes.
+func hasWeapon(actions []any, weapons []string) bool {
+	for _, a := range actions {
+		w, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		atk, ok := w["attack"].(map[string]any)
+		if !ok {
+			continue
+		}
+		wp, _ := atk["weapon"].(string)
+		for _, want := range weapons {
+			if weaponContains(wp, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// applyAddStrike adds a natural Strike derived from the creature's lowest
+// melee Strike (the NPC Core "jaws Strike... deals damage equal to the
+// creature's lowest melee Strike" pattern, also tengu's beak and vampire's
+// fangs). Item carries the config: weapon (required), damage_type, traits
+// (replacing the source strike's — a natural attack doesn't inherit weapon
+// properties), and skip_if_weapons for the vampire-style dedup. Creatures
+// with no melee Strike are skipped: there is nothing to derive from.
+func applyAddStrike(rv ResolvedValue, eff Effect) error {
+	cfg := eff.ItemMap()
+	if cfg == nil {
+		return fmt.Errorf("add_strike requires an item config")
+	}
+	weapon, _ := cfg["weapon"].(string)
+	if weapon == "" {
+		return fmt.Errorf("add_strike: item.weapon is required")
+	}
+	actions, ok := rv.Get().([]any)
+	if !ok {
+		slog.Warn("add_strike target is not an action list, skipped", "weapon", weapon)
+		return nil
+	}
+
+	skip := []string{weapon}
+	if raw, ok := cfg["skip_if_weapons"].([]any); ok {
+		for _, w := range raw {
+			if s, ok := w.(string); ok {
+				skip = append(skip, s)
+			}
+		}
+	}
+	if hasWeapon(actions, skip) {
+		return nil
+	}
+	source := lowestMeleeStrike(actions)
+	if source == nil {
+		slog.Warn("add_strike skipped: creature has no usable melee Strike", "weapon", weapon)
+		return nil
+	}
+
+	wrapper := deepCopy(source).(map[string]any)
+	atk := wrapper["attack"].(map[string]any)
+	atk["weapon"] = weapon
+	atk["traits"] = strikeTraits(cfg["traits"])
+
+	// "deals damage equal to the creature's lowest melee Strike" copies the
+	// primary damage only — property-rune riders, Grab-style effects, and
+	// persistent entries belong to the source weapon, not the new natural
+	// attack.
+	srcAtk := source["attack"].(map[string]any)
+	srcFirst := srcAtk["damage"].([]any)[0].(map[string]any)
+	entry := map[string]any{
+		"damage_type": srcFirst["damage_type"],
+		"formula":     srcFirst["formula"],
+		"subtype":     "attack_damage",
+		"type":        "stat_block_section",
+	}
+	if p, _ := srcFirst["persistent"].(bool); p {
+		// persistent is a property of the copied primary damage, not a rider
+		entry["persistent"] = true
+	}
+	if dt, _ := cfg["damage_type"].(string); dt != "" {
+		entry["damage_type"] = dt
+	}
+	atk["damage"] = []any{entry}
+	rv.Set(append(actions, wrapper))
+	return nil
+}
+
+// strikeTraits builds an attack trait list from an add_strike config: each
+// entry is a trait name string or a {name, value} map (Versatile B style).
+func strikeTraits(raw any) []any {
+	traits := []any{}
+	entries, _ := raw.([]any)
+	for _, tr := range entries {
+		switch v := tr.(type) {
+		case string:
+			traits = append(traits, map[string]any{"name": v, "type": "stat_block_section"})
+		case map[string]any:
+			t := deepCopy(v).(map[string]any)
+			t["type"] = "stat_block_section"
+			traits = append(traits, t)
+		}
+	}
+	return traits
 }
 
 // sameMap checks if two values point to the same underlying map by pointer.
