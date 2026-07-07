@@ -48,7 +48,7 @@ func compact(arr []any) []map[string]any {
 	for i, e := range arr {
 		m := e.(map[string]any)
 		c := map[string]any{}
-		for _, k := range []string{"formula", "damage_type", "persistent", "effect"} {
+		for _, k := range []string{"formula", "damage_type", "persistent", "splash", "effect"} {
 			if v, ok := m[k]; ok {
 				c[k] = v
 			}
