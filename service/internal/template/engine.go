@@ -1208,7 +1208,9 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 
 // averageDamage returns the expected value of a dice formula ("2d8+4" →
 // 13); flat numbers return themselves, unparseable formulas return -1 so
-// they never win the lowest-strike comparison... but also never block it.
+// they never win the lowest-strike comparison. Atoi cannot fail on the
+// regex captures: diceFormula only captures digit runs (with an optional
+// sign), far below the int range.
 func averageDamage(formula string) float64 {
 	if g := diceFormula.FindStringSubmatch(formula); g != nil {
 		n, _ := strconv.Atoi(g[1])
@@ -1256,20 +1258,24 @@ func lowestMeleeStrike(actions []any) map[string]any {
 	return best
 }
 
-// hasWeapon reports whether any attack in actions uses one of the weapons
-// (case-insensitive).
+// hasWeapon reports whether any attack in actions uses one of the weapons,
+// matching whole words case-insensitively — a creature with "snake fangs"
+// or "dragon jaws" already has fangs/jaws for dedup purposes.
 func hasWeapon(actions []any, weapons []string) bool {
 	for _, a := range actions {
 		w, ok := a.(map[string]any)
 		if !ok {
 			continue
 		}
-		if atk, ok := w["attack"].(map[string]any); ok {
-			if wp, _ := atk["weapon"].(string); wp != "" {
-				for _, want := range weapons {
-					if strings.EqualFold(wp, want) {
-						return true
-					}
+		atk, ok := w["attack"].(map[string]any)
+		if !ok {
+			continue
+		}
+		wp, _ := atk["weapon"].(string)
+		for _, word := range strings.Fields(wp) {
+			for _, want := range weapons {
+				if strings.EqualFold(word, want) {
+					return true
 				}
 			}
 		}
@@ -1295,6 +1301,7 @@ func applyAddStrike(rv ResolvedValue, eff Effect) error {
 	}
 	actions, ok := rv.Get().([]any)
 	if !ok {
+		slog.Warn("add_strike target is not an action list, skipped", "weapon", weapon)
 		return nil
 	}
 
@@ -1311,31 +1318,51 @@ func applyAddStrike(rv ResolvedValue, eff Effect) error {
 	}
 	source := lowestMeleeStrike(actions)
 	if source == nil {
-		slog.Warn("add_strike skipped: creature has no melee Strike", "weapon", weapon)
+		slog.Warn("add_strike skipped: creature has no usable melee Strike", "weapon", weapon)
 		return nil
 	}
 
 	wrapper := deepCopy(source).(map[string]any)
 	atk := wrapper["attack"].(map[string]any)
 	atk["weapon"] = weapon
-	traits := []any{}
-	if raw, ok := cfg["traits"].([]any); ok {
-		for _, tr := range raw {
-			if name, ok := tr.(string); ok {
-				traits = append(traits, map[string]any{"name": name, "type": "stat_block_section"})
-			}
-		}
+	atk["traits"] = strikeTraits(cfg["traits"])
+
+	// "deals damage equal to the creature's lowest melee Strike" copies the
+	// primary damage only — property-rune riders, Grab-style effects, and
+	// persistent entries belong to the source weapon, not the new natural
+	// attack.
+	srcAtk := source["attack"].(map[string]any)
+	srcFirst := srcAtk["damage"].([]any)[0].(map[string]any)
+	entry := map[string]any{
+		"damage_type": srcFirst["damage_type"],
+		"formula":     srcFirst["formula"],
+		"subtype":     "attack_damage",
+		"type":        "stat_block_section",
 	}
-	atk["traits"] = traits
 	if dt, _ := cfg["damage_type"].(string); dt != "" {
-		if dmg, ok := atk["damage"].([]any); ok && len(dmg) > 0 {
-			if first, ok := dmg[0].(map[string]any); ok {
-				first["damage_type"] = dt
-			}
-		}
+		entry["damage_type"] = dt
 	}
+	atk["damage"] = []any{entry}
 	rv.Set(append(actions, wrapper))
 	return nil
+}
+
+// strikeTraits builds an attack trait list from an add_strike config: each
+// entry is a trait name string or a {name, value} map (Versatile B style).
+func strikeTraits(raw any) []any {
+	traits := []any{}
+	entries, _ := raw.([]any)
+	for _, tr := range entries {
+		switch v := tr.(type) {
+		case string:
+			traits = append(traits, map[string]any{"name": v, "type": "stat_block_section"})
+		case map[string]any:
+			t := deepCopy(v).(map[string]any)
+			t["type"] = "stat_block_section"
+			traits = append(traits, t)
+		}
+	}
+	return traits
 }
 
 // sameMap checks if two values point to the same underlying map by pointer.
