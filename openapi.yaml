@@ -668,18 +668,65 @@ components:
           description: |
             When to apply this effect. Supports: "default", path comparisons
             (e.g. "$.creature_type.level <= 0"), && conjunctions, and null
-            checks. Effects sharing a target form a first-match chain.
+            checks. Effects sharing a target AND operation form a first-match
+            chain; other conditional effects evaluate independently.
           type: string
           example: "$.creature_type.level <= 0"
         target:
-          description: "JSONPath within stat_block (e.g. $.defense.ac.value). Supports [*] wildcards."
+          description: "JSONPath within stat_block (e.g. $.defense.ac.value). Supports [*] wildcards and [?(@.field=='v')] filters."
           type: string
           example: "$.defense.ac.value"
         operation:
           type: string
-          enum: [adjustment, add_modifier]
+          enum:
+            - adjustment
+            - add_item
+            - add_items
+            - add_modifier
+            - add_strike
+            - no_op
+            - replace
+            - remove_all_except
+            - remove_item
+            - replace_highest_with
+            - replace_one_die
+            - select
+            - set_reach
+            - size_increment
         value:
-          description: Numeric adjustment value (for operation=adjustment)
+          description: |
+            Operation value. Numeric for adjustment/set_reach; any JSON value
+            for replace; damage type string for replace_one_die. set_reach
+            also accepts {"baseline": B, "notable": N} — melee attacks without
+            a Reach trait gain a copy of `item` at B feet, attacks with one
+            are lowered to N feet (never raised).
+        value_from:
+          description: |
+            JSONPath expression computing the value from the creature
+            (supports "| max", "| min", "| max / N", "| high_for_level", "/ N").
+          type: string
+        minimum:
+          description: Floor applied to value_from results.
+          type: number
+        item:
+          description: Object (or string) to add — add_item, add_strike item spec, or the Reach trait template for set_reach's baseline form.
+        source:
+          description: JSONPath selecting items to copy (for add_items).
+          type: string
+        name:
+          description: Item name to remove (for remove_item).
+          type: string
+        names:
+          description: Item names to keep (for remove_all_except).
+          type: array
+          items:
+            type: string
+        movement_type:
+          description: Movement type for replace_highest_with.
+          type: string
+        selection:
+          description: Selection descriptor presented to the user (for select).
+          type: object
         modifier:
           description: Modifier object to append (for operation=add_modifier)
           type: object

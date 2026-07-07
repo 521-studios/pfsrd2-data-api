@@ -1172,38 +1172,89 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
-// applySetReach reduces an attack's Reach trait to the effect's value in
-// feet (Miniature semantics: notable-reach melee Strikes drop to 5 feet).
-// Attacks without a Reach trait are untouched — their reach is implied by
-// the creature's size, not stored on the attack. Only the trait's value is
+// applySetReach reduces an attack's reach (Miniature semantics).
+//
+// With a numeric value, each existing Reach trait on the attack is lowered
+// to that many feet; attacks without a Reach trait are untouched — their
+// reach is implied by the creature's size, not stored on the attack.
+//
+// With an object value {"baseline": B, "notable": N}, the effect encodes the
+// full Tiny reach rule for melee attacks: attacks WITH a Reach trait are
+// lowered to N feet, and attacks WITHOUT one — whose reach is the implicit
+// baseline — gain a copy of eff.Item (the canonical Reach trait object,
+// carried in the template data like Miniature's size-trait replaces) with
+// its value set to "B feet". Ranged attacks are never touched: reach is a
+// melee concept, and a synthesized Reach trait would corrupt them.
+//
+// In both forms set_reach only ever reduces, and only the trait's value is
 // rewritten: its text is glossary rules prose, not a value display.
 func applySetReach(rv ResolvedValue, eff Effect) error {
-	v, ok := toFloat64(eff.Value)
-	if !ok {
-		return fmt.Errorf("set_reach: value must be numeric, got %T (%v)", eff.Value, eff.Value)
+	baseline, notable, synthesize, err := setReachValues(eff)
+	if err != nil {
+		return err
 	}
 	attack, ok := rv.Get().(map[string]any)
 	if !ok {
 		return nil
 	}
-	feet := fmt.Sprintf("%d feet", int(v))
+	if synthesize && attack["attack_type"] != "melee" {
+		return nil
+	}
 	traits, _ := attack["traits"].([]any)
+	found := false
 	for _, tr := range traits {
 		m, ok := tr.(map[string]any)
 		if !ok || m["name"] != "Reach" {
 			continue
 		}
+		found = true
 		// set_reach only ever reduces: a Tiny creature's existing
 		// "Reach 0 feet" must not be raised to 5.
 		if old, okOld := m["value"].(string); okOld {
 			var oldFeet int
-			if _, err := fmt.Sscanf(old, "%d", &oldFeet); err == nil && oldFeet <= int(v) {
+			if _, err := fmt.Sscanf(old, "%d", &oldFeet); err == nil && oldFeet <= notable {
 				continue
 			}
 		}
-		m["value"] = feet
+		m["value"] = fmt.Sprintf("%d feet", notable)
+	}
+	if synthesize && !found {
+		newTrait, ok := deepCopy(eff.ItemMap()).(map[string]any)
+		if !ok {
+			return fmt.Errorf("set_reach: item is not a trait object")
+		}
+		newTrait["value"] = fmt.Sprintf("%d feet", baseline)
+		attack["traits"] = append(traits, newTrait)
 	}
 	return nil
+}
+
+// setReachValues decodes the two set_reach value forms. Numeric → lower
+// existing Reach traits to that value. {"baseline": B, "notable": N} →
+// baseline-synthesis form, which additionally requires eff.Item (the Reach
+// trait template to synthesize) — a missing item is a malformed template
+// and errors rather than silently skipping the baseline half of the rule.
+func setReachValues(eff Effect) (baseline, notable int, synthesize bool, err error) {
+	if v, ok := toFloat64(eff.Value); ok {
+		return 0, int(v), false, nil
+	}
+	obj, ok := eff.Value.(map[string]any)
+	if !ok {
+		return 0, 0, false, fmt.Errorf(
+			"set_reach: value must be numeric or a {baseline, notable} object, got %T (%v)",
+			eff.Value, eff.Value)
+	}
+	b, okB := toFloat64(obj["baseline"])
+	n, okN := toFloat64(obj["notable"])
+	if !okB || !okN {
+		return 0, 0, false, fmt.Errorf(
+			"set_reach: object value needs numeric baseline and notable, got %v", obj)
+	}
+	if eff.ItemMap() == nil {
+		return 0, 0, false, fmt.Errorf(
+			"set_reach: baseline form requires item (the Reach trait to synthesize)")
+	}
+	return int(b), int(n), true, nil
 }
 
 // averageDamage returns the expected value of a dice formula ("2d8+4" →

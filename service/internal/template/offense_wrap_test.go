@@ -171,6 +171,178 @@ func TestSetReach_NonNumericValueErrors(t *testing.T) {
 	}
 }
 
+// reachTraitItem is the canonical Reach trait template a baseline-form
+// set_reach effect carries in its item field (as Miniature's override does).
+func reachTraitItem() map[string]any {
+	return map[string]any{
+		"name":    "Reach",
+		"game-id": "1d6143e399ba5d4085ca236a97cf860c",
+		"type":    "trait",
+	}
+}
+
+func baselineSetReachStatBlock() map[string]any {
+	return map[string]any{
+		"offense": map[string]any{
+			"offensive_actions": []any{
+				map[string]any{
+					"name": "Melee",
+					"attack": map[string]any{
+						"attack_type": "melee",
+						"name":        "jaws",
+						"traits":      []any{},
+					},
+				},
+				map[string]any{
+					"name": "Melee",
+					"attack": map[string]any{
+						"attack_type": "melee",
+						"name":        "tail",
+						"traits": []any{
+							map[string]any{"name": "Reach", "value": "15 feet",
+								"text": "glossary prose", "type": "stat_block_section"},
+						},
+					},
+				},
+				map[string]any{
+					"name": "Ranged",
+					"attack": map[string]any{
+						"attack_type": "ranged",
+						"name":        "spine volley",
+						"traits":      []any{},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestSetReach_BaselineFormSynthesizesAndLowers(t *testing.T) {
+	// Object form encodes the full Tiny rule: baseline melee strikes gain a
+	// synthesized Reach trait at 0 feet, notable-reach strikes drop to 5.
+	sb := baselineSetReachStatBlock()
+	eff := Effect{
+		Operation: "set_reach",
+		Target:    "$.offense.offensive_actions[*].attack",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+		Item:      reachTraitItem(),
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	oa := sb["offense"].(map[string]any)["offensive_actions"].([]any)
+
+	jaws := oa[0].(map[string]any)["attack"].(map[string]any)
+	jt := jaws["traits"].([]any)
+	if len(jt) != 1 {
+		t.Fatalf("jaws should gain exactly one synthesized trait, got %v", jt)
+	}
+	syn := jt[0].(map[string]any)
+	if syn["name"] != "Reach" || syn["value"] != "0 feet" {
+		t.Errorf("synthesized trait = %#v", syn)
+	}
+	if syn["game-id"] != "1d6143e399ba5d4085ca236a97cf860c" {
+		t.Errorf("synthesized trait lost item fields: %#v", syn)
+	}
+
+	tail := oa[1].(map[string]any)["attack"].(map[string]any)
+	tr := tail["traits"].([]any)[0].(map[string]any)
+	if tr["value"] != "5 feet" || tr["text"] != "glossary prose" {
+		t.Errorf("notable reach = %#v (want 5 feet, text untouched)", tr)
+	}
+	if len(tail["traits"].([]any)) != 1 {
+		t.Errorf("tail must not gain a synthesized trait: %v", tail["traits"])
+	}
+
+	ranged := oa[2].(map[string]any)["attack"].(map[string]any)
+	if len(ranged["traits"].([]any)) != 0 {
+		t.Errorf("ranged attack must stay untouched: %v", ranged["traits"])
+	}
+}
+
+func TestSetReach_BaselineFormSynthesizedCopiesAreIndependent(t *testing.T) {
+	// Each baseline strike gets its own deep copy of the item — mutating one
+	// synthesized trait must not leak into another attack's.
+	sb := baselineSetReachStatBlock()
+	oa := sb["offense"].(map[string]any)["offensive_actions"].([]any)
+	oa[1].(map[string]any)["attack"].(map[string]any)["traits"] = []any{}
+	eff := Effect{
+		Operation: "set_reach",
+		Target:    "$.offense.offensive_actions[*].attack",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+		Item:      reachTraitItem(),
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	first := oa[0].(map[string]any)["attack"].(map[string]any)["traits"].([]any)[0].(map[string]any)
+	second := oa[1].(map[string]any)["attack"].(map[string]any)["traits"].([]any)[0].(map[string]any)
+	first["value"] = "mutated"
+	if second["value"] != "0 feet" {
+		t.Errorf("synthesized traits share memory: %#v", second)
+	}
+}
+
+func TestSetReach_BaselineFormOnlyLowers(t *testing.T) {
+	// An existing Reach 0 must not be raised to notable, and no trait is
+	// synthesized alongside it.
+	sb := map[string]any{
+		"offense": map[string]any{
+			"offensive_actions": []any{
+				map[string]any{
+					"name": "Melee",
+					"attack": map[string]any{
+						"attack_type": "melee",
+						"traits": []any{
+							map[string]any{"name": "Reach", "value": "0 feet",
+								"type": "stat_block_section"},
+						},
+					},
+				},
+			},
+		},
+	}
+	eff := Effect{
+		Operation: "set_reach",
+		Target:    "$.offense.offensive_actions[*].attack",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+		Item:      reachTraitItem(),
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	traits := sb["offense"].(map[string]any)["offensive_actions"].([]any)[0].(map[string]any)["attack"].(map[string]any)["traits"].([]any)
+	if len(traits) != 1 {
+		t.Fatalf("no trait may be synthesized when one exists: %v", traits)
+	}
+	if traits[0].(map[string]any)["value"] != "0 feet" {
+		t.Errorf("existing Reach 0 was raised: %#v", traits[0])
+	}
+}
+
+func TestSetReach_BaselineFormRequiresItem(t *testing.T) {
+	rv := ResolvedValue{}
+	err := applySetReach(rv, Effect{
+		Operation: "set_reach",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires item") {
+		t.Errorf("want missing-item error, got %v", err)
+	}
+}
+
+func TestSetReach_BaselineFormRequiresBothBounds(t *testing.T) {
+	rv := ResolvedValue{}
+	err := applySetReach(rv, Effect{
+		Operation: "set_reach",
+		Value:     map[string]any{"baseline": float64(0)},
+		Item:      reachTraitItem(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "baseline and notable") {
+		t.Errorf("want missing-bounds error, got %v", err)
+	}
+}
+
 func TestWrapOffensiveAbility_PassthroughKeys(t *testing.T) {
 	for _, k := range []string{"ability", "attack", "spells", "mythic_ability"} {
 		item := map[string]any{"name": "X", k: map[string]any{"name": "X"}}
