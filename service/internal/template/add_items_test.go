@@ -96,10 +96,162 @@ func TestAddItems_MultiEffectGroupSameTarget(t *testing.T) {
 	}
 }
 
+func TestAddItems_UnfilteredSourceDivertsSenseToSpecialSenses(t *testing.T) {
+	// The real NPC Core shape: one unfiltered add_items targeting
+	// automatic_abilities, with a known sense in the pool. The sense must
+	// land in special_senses (where creatures keep it), not be dropped, and
+	// non-sense abilities go to the effect's target.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{
+			ability("Darkvision", "special_sense"),
+			ability("Boulder Roll", "offensive"),
+		},
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Darkvision"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	auto := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(auto, []string{"Boulder Roll"}) {
+		t.Errorf("automatic_abilities = %v", auto)
+	}
+}
+
+func TestAddItems_FilterOverridesSenseRouting(t *testing.T) {
+	// An explicit name filter wins over the sense heuristic: a known sense
+	// filtered into a non-sense container stays where the filter put it.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Darkvision", "special_sense")},
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities[?(@.name=='Darkvision')]",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	auto := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(auto, []string{"Darkvision"}) {
+		t.Errorf("automatic_abilities = %v", auto)
+	}
+	if senses := sb["senses"].(map[string]any)["special_senses"]; senses != nil {
+		t.Errorf("special_senses should be untouched, got %v", senses)
+	}
+}
+
+func TestAddItems_FilterMatchingNothingErrors(t *testing.T) {
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Effects: []Effect{{
+				Operation: "add_items",
+				Source:    "$.changes[*].abilities[?(@.name=='No Such Ability')]",
+				Target:    "$.defense.automatic_abilities",
+			}},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Error("expected error for filter matching no pool ability")
+	}
+}
+
+func TestAddItems_ApostropheNameSurvivesSynthesis(t *testing.T) {
+	// Ability-only template with a quoted name: the synthesized effect
+	// carries the ability directly, so no string filter can garble it.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Hunter's Instinct", "reactive")},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	got := namesOf(sb["defense"].(map[string]any)["reactive_abilities"])
+	if !reflect.DeepEqual(got, []string{"Hunter's Instinct"}) {
+		t.Errorf("reactive_abilities = %v", got)
+	}
+}
+
+func TestAddItems_UnknownCategoryFallback(t *testing.T) {
+	// Missing/unknown ability_category: known sense names route to
+	// special_senses, everything else defaults to automatic_abilities.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{
+			ability("Tremorsense", ""),
+			ability("Mystery Power", "brand_new_category"),
+		},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	senses := namesOf(sb["senses"].(map[string]any)["special_senses"])
+	if !reflect.DeepEqual(senses, []string{"Tremorsense"}) {
+		t.Errorf("special_senses = %v", senses)
+	}
+	auto := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(auto, []string{"Mystery Power"}) {
+		t.Errorf("automatic_abilities = %v", auto)
+	}
+}
+
+func TestAddItems_PoolUnionBothLevels(t *testing.T) {
+	// Change-level and top-level abilities coexist in the pool, and having
+	// changes means no synthesis: only referenced abilities are applied.
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Abilities: []any{ability("Top Ability", "automatic")},
+		Changes: []Change{{
+			ChangeCategory: "abilities",
+			Abilities:      []any{ability("Change Ability", "automatic")},
+			Effects: []Effect{
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Top Ability')]", Target: "$.defense.automatic_abilities"},
+				{Operation: "add_items", Source: "$.changes[*].abilities[?(@.name=='Change Ability')]", Target: "$.defense.automatic_abilities"},
+			},
+		}},
+	}}
+	creature := map[string]any{"stat_block": baseStatBlock()}
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	sb := resp.Creature["stat_block"].(map[string]any)
+	auto := namesOf(sb["defense"].(map[string]any)["automatic_abilities"])
+	if !reflect.DeepEqual(auto, []string{"Top Ability", "Change Ability"}) {
+		t.Errorf("automatic_abilities = %v", auto)
+	}
+	if ia := sb["interaction_abilities"]; ia != nil {
+		t.Errorf("no synthesis should run when changes exist, got %v", ia)
+	}
+}
+
 func TestAddItems_SourceFilterKeepsSenseOutOfWrongTarget(t *testing.T) {
-	// A name filter is explicit: it must select exactly that ability even when
-	// the unfiltered routing heuristic would have excluded it (a known sense
-	// added to a non-sense container stays where the filter put it).
+	// Two filtered effects routing to the containers the heuristic would
+	// also pick: verifies no cross-leak between targets.
 	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
 		Changes: []Change{{
 			ChangeCategory: "abilities",
@@ -223,6 +375,38 @@ func TestValueFromSpeedItemGetsNamed(t *testing.T) {
 	added := mv[len(mv)-1].(map[string]any)
 	if added["name"] != "swim 15 feet" || added["value"] != float64(15) {
 		t.Errorf("added speed entry = %#v", added)
+	}
+}
+
+func TestValueFromWalkSpeedNameIsBare(t *testing.T) {
+	// Walk entries on parsed creatures are named "25 feet" with no prefix —
+	// the amphibious walk-from-swim arm must match that.
+	sb := map[string]any{
+		"offense": map[string]any{
+			"speed": map[string]any{
+				"movement": []any{
+					map[string]any{"movement_type": "swim", "name": "swim 60 feet", "value": float64(60),
+						"subtype": "speed", "type": "stat_block_section"},
+				},
+			},
+		},
+	}
+	eff := Effect{
+		Operation:   "add_item",
+		Target:      "$.offense.speed.movement",
+		Conditional: "$.offense.speed.movement[?(@.movement_type=='walk')] == null",
+		Item: map[string]any{"movement_type": "walk", "name": "walk",
+			"subtype": "speed", "type": "stat_block_section"},
+		ValueFrom: "$.offense.speed.movement[?(@.movement_type=='swim')].value / 2",
+		Minimum:   floatPtr(15),
+	}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	mv := sb["offense"].(map[string]any)["speed"].(map[string]any)["movement"].([]any)
+	added := mv[len(mv)-1].(map[string]any)
+	if added["name"] != "30 feet" || added["value"] != float64(30) {
+		t.Errorf("added walk entry = %#v", added)
 	}
 }
 
