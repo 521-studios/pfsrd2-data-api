@@ -208,6 +208,24 @@ func TestReplaceOneDie_SkipsSplashRider(t *testing.T) {
 	}
 }
 
+func TestReplaceOneDie_PersistentExcludedFromTotal(t *testing.T) {
+	// A different-type persistent rider must not count toward the die total:
+	// if it did, this strike would read as 3 dice and split the bleed rider;
+	// correctly it is one die -> flat 1 fire, rider untouched.
+	got := compact(applyROD(t, dmg(
+		map[string]any{"formula": "1d8", "damage_type": "piercing"},
+		map[string]any{"formula": "2d6", "damage_type": "bleed", "persistent": true},
+	)))
+	want := []map[string]any{
+		{"formula": "1d8", "damage_type": "piercing"},
+		{"formula": "2d6", "damage_type": "bleed", "persistent": true},
+		{"formula": "1", "damage_type": "fire"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v want %v", got, want)
+	}
+}
+
 func TestReplaceOneDie_NonStringValueErrors(t *testing.T) {
 	sb := map[string]any{
 		"offense": map[string]any{

@@ -745,23 +745,23 @@ type diceCand struct {
 	mod        string
 }
 
+// isRider reports whether a damage entry is a rider (persistent or splash)
+// rather than part of the Strike's own damage dice.
+func isRider(m map[string]any) bool {
+	p, _ := m["persistent"].(bool)
+	s, _ := m["splash"].(bool)
+	return p || s
+}
+
 // scanDiceCandidates walks a damage array and returns the entries eligible for
 // conversion to newType, plus the Strike's total die count for rule-branch
-// selection. Persistent and splash entries are riders, not the Strike's own
-// dice — they are skipped entirely. Entries already of the target type count
-// toward the total (the Strike does deal those dice) but are not candidates.
-// Atoi cannot fail here: diceFormula only captures digit runs, and real
-// formulas are far below the int range.
+// selection. Rider entries are skipped entirely. Entries already of the target
+// type count toward the total (the Strike does deal those dice) but are not
+// candidates.
 func scanDiceCandidates(arr []any, newType string) (cands []diceCand, total int) {
 	for i, elem := range arr {
 		m, ok := elem.(map[string]any)
-		if !ok {
-			continue
-		}
-		if p, _ := m["persistent"].(bool); p {
-			continue
-		}
-		if s, _ := m["splash"].(bool); s {
+		if !ok || isRider(m) {
 			continue
 		}
 		f, _ := m["formula"].(string)
@@ -769,6 +769,8 @@ func scanDiceCandidates(arr []any, newType string) (cands []diceCand, total int)
 		if g == nil {
 			continue
 		}
+		// Atoi cannot fail: diceFormula only captures digit runs, and real
+		// formulas are far below the int range.
 		n, _ := strconv.Atoi(g[1])
 		total += n
 		if dt, _ := m["damage_type"].(string); dt == newType {
