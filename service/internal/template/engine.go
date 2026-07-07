@@ -2,6 +2,7 @@ package template
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -427,10 +428,21 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	// Resolve computed values before applying
 	if eff.ValueFrom != "" {
 		computed, err := evaluateValueFrom(statBlock, eff.ValueFrom, eff.Minimum)
-		if err != nil {
-			// Non-fatal: creature may lack the field (e.g., no walk speed for swim-only creatures)
+		if errors.Is(err, ErrValueFromPath) {
+			// Non-fatal: creature lacks the field (e.g., no walk speed for
+			// swim-only creatures)
 			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
 			return nil
+		}
+		if errors.Is(err, ErrValueFromShape) {
+			// Template/schema mismatch: skip the effect but say so loudly —
+			// this hides a template bug, not a creature quirk
+			slog.Warn("value_from shape mismatch, effect skipped", "expr", eff.ValueFrom, "err", err)
+			return nil
+		}
+		if err != nil {
+			// Malformed template expression — surface it, don't skip
+			return fmt.Errorf("value_from %q: %w", eff.ValueFrom, err)
 		}
 		if m := eff.ItemMap(); m != nil {
 			cp := make(map[string]any)
@@ -723,12 +735,40 @@ func isSenseAbility(a any) bool {
 }
 
 // itemForTarget prepares one ability for insertion at target: sense
-// containers get the special_sense conversion, everything else a deep copy.
+// containers get the special_sense conversion, offensive_actions get the
+// display wrapper, everything else a deep copy.
 func itemForTarget(a any, target string) any {
 	if isSenseTarget(target) {
 		return abilityToSpecialSense(a)
 	}
+	if strings.HasSuffix(target, "offensive_actions") {
+		return wrapOffensiveAbility(a)
+	}
 	return deepCopy(a)
+}
+
+// wrapOffensiveAbility wraps a plain ability in the offensive_action entry
+// shape real creatures use ({name, ability, offensive_action_type}); the
+// display layer renders wrappers, not bare abilities. Items already carrying
+// a payload key (ability/attack/spells/mythic_ability) are wrappers and pass
+// through unchanged.
+func wrapOffensiveAbility(a any) any {
+	m, ok := a.(map[string]any)
+	if !ok {
+		return deepCopy(a)
+	}
+	for _, k := range []string{"ability", "attack", "spells", "mythic_ability"} {
+		if _, wrapped := m[k]; wrapped {
+			return deepCopy(a)
+		}
+	}
+	return map[string]any{
+		"name":                  abilityName(a),
+		"ability":               deepCopy(a),
+		"offensive_action_type": "ability",
+		"subtype":               "offensive_action",
+		"type":                  "stat_block_section",
+	}
 }
 
 // filteredPoolItems selects pool abilities matching a name filter. The
@@ -762,7 +802,7 @@ func unfilteredPoolItems(pool []any, target string) map[string][]any {
 		case isSenseAbility(a):
 			byTarget[specialSensesTarget] = append(byTarget[specialSensesTarget], abilityToSpecialSense(a))
 		case !isSenseTarget(target):
-			byTarget[target] = append(byTarget[target], deepCopy(a))
+			byTarget[target] = append(byTarget[target], itemForTarget(a, target))
 		}
 	}
 	return byTarget
@@ -1130,16 +1170,37 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 	return nil
 }
 
-// applySetReach sets the reach value on attacks.
-// Used by Miniature template.
+// applySetReach reduces an attack's Reach trait to the effect's value in
+// feet (Miniature semantics: notable-reach melee Strikes drop to 5 feet).
+// Attacks without a Reach trait are untouched — their reach is implied by
+// the creature's size, not stored on the attack. Only the trait's value is
+// rewritten: its text is glossary rules prose, not a value display.
 func applySetReach(rv ResolvedValue, eff Effect) error {
-	current := rv.Get()
-	m, ok := current.(map[string]any)
+	v, ok := toFloat64(eff.Value)
+	if !ok {
+		return fmt.Errorf("set_reach: value must be numeric, got %T (%v)", eff.Value, eff.Value)
+	}
+	attack, ok := rv.Get().(map[string]any)
 	if !ok {
 		return nil
 	}
-	m["reach"] = eff.Value
-	rv.Set(m)
+	feet := fmt.Sprintf("%d feet", int(v))
+	traits, _ := attack["traits"].([]any)
+	for _, tr := range traits {
+		m, ok := tr.(map[string]any)
+		if !ok || m["name"] != "Reach" {
+			continue
+		}
+		// set_reach only ever reduces: a Tiny creature's existing
+		// "Reach 0 feet" must not be raised to 5.
+		if old, okOld := m["value"].(string); okOld {
+			var oldFeet int
+			if _, err := fmt.Sscanf(old, "%d", &oldFeet); err == nil && oldFeet <= int(v) {
+				continue
+			}
+		}
+		m["value"] = feet
+	}
 	return nil
 }
 
