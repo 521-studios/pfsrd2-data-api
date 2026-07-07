@@ -1189,7 +1189,7 @@ func applyReplaceOneDie(rv ResolvedValue, eff Effect) error {
 // In both forms set_reach only ever reduces, and only the trait's value is
 // rewritten: its text is glossary rules prose, not a value display.
 func applySetReach(rv ResolvedValue, eff Effect) error {
-	baseline, notable, synthesize, err := setReachValues(eff)
+	baseline, notable, reachItem, err := setReachValues(eff)
 	if err != nil {
 		return err
 	}
@@ -1197,19 +1197,31 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 	if !ok {
 		return nil
 	}
-	if synthesize && attack["attack_type"] != "melee" {
+	if reachItem != nil && attack["attack_type"] != "melee" {
 		return nil
 	}
 	traits, _ := attack["traits"].([]any)
-	found := false
+	found := lowerReachTraits(traits, notable)
+	if reachItem != nil && !found {
+		// Baseline strike: synthesize its own copy of the Reach trait —
+		// each attack must get an independent map.
+		newTrait := deepCopy(reachItem).(map[string]any)
+		newTrait["value"] = fmt.Sprintf("%d feet", baseline)
+		attack["traits"] = append(traits, newTrait)
+	}
+	return nil
+}
+
+// lowerReachTraits reduces every Reach trait in traits to notable feet and
+// reports whether any Reach trait exists. set_reach only ever reduces: a
+// Tiny creature's existing "Reach 0 feet" must not be raised to 5.
+func lowerReachTraits(traits []any, notable int) (found bool) {
 	for _, tr := range traits {
 		m, ok := tr.(map[string]any)
 		if !ok || m["name"] != "Reach" {
 			continue
 		}
 		found = true
-		// set_reach only ever reduces: a Tiny creature's existing
-		// "Reach 0 feet" must not be raised to 5.
 		if old, okOld := m["value"].(string); okOld {
 			var oldFeet int
 			if _, err := fmt.Sscanf(old, "%d", &oldFeet); err == nil && oldFeet <= notable {
@@ -1218,43 +1230,39 @@ func applySetReach(rv ResolvedValue, eff Effect) error {
 		}
 		m["value"] = fmt.Sprintf("%d feet", notable)
 	}
-	if synthesize && !found {
-		newTrait, ok := deepCopy(eff.ItemMap()).(map[string]any)
-		if !ok {
-			return fmt.Errorf("set_reach: item is not a trait object")
-		}
-		newTrait["value"] = fmt.Sprintf("%d feet", baseline)
-		attack["traits"] = append(traits, newTrait)
-	}
-	return nil
+	return found
 }
 
 // setReachValues decodes the two set_reach value forms. Numeric → lower
-// existing Reach traits to that value. {"baseline": B, "notable": N} →
-// baseline-synthesis form, which additionally requires eff.Item (the Reach
-// trait template to synthesize) — a missing item is a malformed template
-// and errors rather than silently skipping the baseline half of the rule.
-func setReachValues(eff Effect) (baseline, notable int, synthesize bool, err error) {
+// existing Reach traits to that value (reachItem is nil). {"baseline": B,
+// "notable": N} → baseline-synthesis form, which additionally requires
+// eff.Item to be the Reach trait object to synthesize — a missing or
+// non-object item is a malformed template and errors rather than silently
+// skipping the baseline half of the rule. Returning the validated map makes
+// the synthesis invariant structural: a non-nil reachItem IS the trait.
+func setReachValues(eff Effect) (baseline, notable int, reachItem map[string]any, err error) {
 	if v, ok := toFloat64(eff.Value); ok {
-		return 0, int(v), false, nil
+		return 0, int(v), nil, nil
 	}
 	obj, ok := eff.Value.(map[string]any)
 	if !ok {
-		return 0, 0, false, fmt.Errorf(
+		return 0, 0, nil, fmt.Errorf(
 			"set_reach: value must be numeric or a {baseline, notable} object, got %T (%v)",
 			eff.Value, eff.Value)
 	}
 	b, okB := toFloat64(obj["baseline"])
 	n, okN := toFloat64(obj["notable"])
 	if !okB || !okN {
-		return 0, 0, false, fmt.Errorf(
+		return 0, 0, nil, fmt.Errorf(
 			"set_reach: object value needs numeric baseline and notable, got %v", obj)
 	}
-	if eff.ItemMap() == nil {
-		return 0, 0, false, fmt.Errorf(
-			"set_reach: baseline form requires item (the Reach trait to synthesize)")
+	item := eff.ItemMap()
+	if item == nil {
+		return 0, 0, nil, fmt.Errorf(
+			"set_reach: baseline form requires item to be the Reach trait object "+
+				"to synthesize, got %T (%v)", eff.Item, eff.Item)
 	}
-	return int(b), int(n), true, nil
+	return int(b), int(n), item, nil
 }
 
 // averageDamage returns the expected value of a dice formula ("2d8+4" →

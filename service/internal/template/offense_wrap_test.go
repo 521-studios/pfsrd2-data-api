@@ -331,6 +331,34 @@ func TestSetReach_BaselineFormRequiresItem(t *testing.T) {
 	}
 }
 
+func TestSetReach_BaselineFormRejectsStringItem(t *testing.T) {
+	// item must be the Reach trait OBJECT — a string item is the reachable
+	// misconfiguration and must get the item error, not a nil-map panic.
+	rv := ResolvedValue{}
+	err := applySetReach(rv, Effect{
+		Operation: "set_reach",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+		Item:      "Reach",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires item") {
+		t.Errorf("want item-type error for string item, got %v", err)
+	}
+}
+
+func TestSetReach_BaselineFormNonMapTargetNoOp(t *testing.T) {
+	// The object form must no-op on a non-map target just like the numeric
+	// form (value decoding succeeds first, then the target check).
+	rv := ResolvedValue{}
+	err := applySetReach(rv, Effect{
+		Operation: "set_reach",
+		Value:     map[string]any{"baseline": float64(0), "notable": float64(5)},
+		Item:      reachTraitItem(),
+	})
+	if err != nil {
+		t.Errorf("baseline form on nil target should no-op, got %v", err)
+	}
+}
+
 func TestSetReach_BaselineFormRequiresBothBounds(t *testing.T) {
 	rv := ResolvedValue{}
 	err := applySetReach(rv, Effect{
