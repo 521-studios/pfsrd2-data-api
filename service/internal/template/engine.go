@@ -20,6 +20,16 @@ import (
 // The creature parameter should be the full creature JSON (with stat_block).
 // The tmpl parameter is the parsed template JSON.
 func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
+	return ApplyWithSelections(creature, tmpl, nil)
+}
+
+// ApplyWithSelections applies the template and then the caller's chosen
+// selection options (the lets-roll contract): each surfaced selection
+// carries an id ("c<change>/e<effect>"); the client answers with option
+// indices (structured selects) or client-computed effects (descriptor
+// selects like the Air spell swap, where the engine cannot fabricate the
+// replacement spell). Applied selections are echoed in the patch document.
+func ApplyWithSelections(creature map[string]any, tmpl TemplateJSON, chosen []SelectionChoice) (*ApplyResult, error) {
 	working := deepCopy(creature).(map[string]any)
 
 	statBlock, ok := working["stat_block"].(map[string]any)
@@ -70,12 +80,16 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 		}
 	}
 
-	// Collect select operations as selections for the client
+	// Collect select operations as selections for the client, keyed by a
+	// stable id the selections payload answers with.
 	var selections []any
-	for _, change := range tmpl.Rules().Changes {
-		for _, eff := range change.Effects {
+	byID := map[string]selectRef{}
+	for ci, change := range tmpl.Rules().Changes {
+		for ei, eff := range change.Effects {
 			if eff.Operation == "select" && eff.Selection != nil {
+				id := fmt.Sprintf("c%d/e%d", ci, ei)
 				sel := map[string]any{
+					"id":              id,
 					"change_category": change.ChangeCategory,
 					"target":          eff.Target,
 					"selection":       eff.Selection,
@@ -84,6 +98,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 					sel["conditional"] = eff.Conditional
 				}
 				selections = append(selections, sel)
+				byID[id] = selectRef{change: change, eff: eff}
 			}
 		}
 	}
@@ -91,10 +106,17 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 		selections = []any{}
 	}
 
+	applied, err := applySelections(working, statBlock, chosen, byID, pool, tmpl.Sections)
+	if err != nil {
+		return nil, err
+	}
+	patches = append(patches, applied...)
+
 	return &ApplyResult{
 		PatchDoc: PatchDocument{
-			AppliedPatches: patches,
-			Selections:     selections,
+			AppliedPatches:    patches,
+			Selections:        selections,
+			AppliedSelections: appliedSelectionIDs(chosen),
 		},
 		Creature: working,
 	}, nil
@@ -1541,4 +1563,111 @@ func sameMap(a, b any) bool {
 
 func containsWildcard(path string) bool {
 	return strings.Contains(path, "[*]")
+}
+
+// selectRef pairs a surfaced selection with its source change/effect.
+type selectRef struct {
+	change Change
+	eff    Effect
+}
+
+// SelectionChoice is one answered selection from the apply request.
+type SelectionChoice struct {
+	ID            string   `json:"id"`
+	OptionIndices []int    `json:"option_indices,omitempty"`
+	Effects       []Effect `json:"effects,omitempty"`
+}
+
+func appliedSelectionIDs(chosen []SelectionChoice) []string {
+	ids := []string{}
+	for _, c := range chosen {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+// applySelections applies the chosen options for each answered selection,
+// producing one patch group per selection (attributed to the selection's
+// change text so the display can highlight and name it).
+func applySelections(working, statBlock map[string]any, chosen []SelectionChoice, byID map[string]selectRef, pool []any, sections []any) ([]PatchGroup, error) {
+	var groups []PatchGroup
+	for _, choice := range chosen {
+		ref, ok := byID[choice.ID]
+		if !ok {
+			return nil, fmt.Errorf("selection %q does not exist on this template", choice.ID)
+		}
+		effects := append([]Effect{}, choice.Effects...)
+		if len(choice.OptionIndices) > 0 {
+			opts, _ := ref.eff.Selection["options"].([]any)
+			for _, idx := range choice.OptionIndices {
+				if idx < 0 || idx >= len(opts) {
+					return nil, fmt.Errorf("selection %q: option index %d out of range (%d options)", choice.ID, idx, len(opts))
+				}
+				parsed, err := effectsFromOption(opts[idx])
+				if err != nil {
+					return nil, fmt.Errorf("selection %q option %d: %w", choice.ID, idx, err)
+				}
+				effects = append(effects, parsed...)
+			}
+		}
+		if len(effects) == 0 {
+			continue
+		}
+		beforeBytes, err := json.Marshal(working)
+		if err != nil {
+			return nil, fmt.Errorf("selection %q: marshal before: %w", choice.ID, err)
+		}
+		selChange := Change{
+			ChangeCategory: ref.change.ChangeCategory,
+			Text:           ref.change.Text,
+			Effects:        effects,
+		}
+		if err := applyChange(statBlock, selChange, pool, sections); err != nil {
+			return nil, fmt.Errorf("apply selection %q: %w", choice.ID, err)
+		}
+		afterBytes, err := json.Marshal(working)
+		if err != nil {
+			return nil, fmt.Errorf("selection %q: marshal after: %w", choice.ID, err)
+		}
+		patch, err := jsondiff.CompareJSON(beforeBytes, afterBytes)
+		if err != nil {
+			return nil, fmt.Errorf("diff selection %q: %w", choice.ID, err)
+		}
+		if len(patch) > 0 {
+			ops := make([]Operation, len(patch))
+			for i, op := range patch {
+				ops[i] = Operation{Op: op.Type, Path: op.Path, Value: op.Value}
+			}
+			groups = append(groups, PatchGroup{
+				ChangeCategory: ref.change.ChangeCategory,
+				Description:    ref.change.Text,
+				SelectionID:    choice.ID,
+				Operations:     ops,
+			})
+		}
+	}
+	return groups, nil
+}
+
+// effectsFromOption parses a selection option: either a single effect
+// object or a {"effects": [...]} bundle (badge-mirrored trait options).
+func effectsFromOption(opt any) ([]Effect, error) {
+	raw, err := json.Marshal(opt)
+	if err != nil {
+		return nil, err
+	}
+	var bundle struct {
+		Effects []Effect `json:"effects"`
+	}
+	if err := json.Unmarshal(raw, &bundle); err == nil && len(bundle.Effects) > 0 {
+		return bundle.Effects, nil
+	}
+	var single Effect
+	if err := json.Unmarshal(raw, &single); err != nil {
+		return nil, err
+	}
+	if single.Operation == "" {
+		return nil, fmt.Errorf("option has no operation")
+	}
+	return []Effect{single}, nil
 }

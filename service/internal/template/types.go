@@ -90,13 +90,19 @@ type ApplyResult struct {
 type PatchDocument struct {
 	AppliedPatches []PatchGroup `json:"applied_patches"`
 	Selections     []any        `json:"selections"`
+	// AppliedSelections lists the selection ids the request answered —
+	// clients rebuild picker state (and deep links) from it.
+	AppliedSelections []string `json:"applied_selections"`
 }
 
 // PatchGroup contains the RFC 6902 operations for one change category.
 type PatchGroup struct {
-	ChangeCategory string      `json:"change_category"`
-	Description    string      `json:"description"`
-	Operations     []Operation `json:"operations"`
+	ChangeCategory string `json:"change_category"`
+	Description    string `json:"description"`
+	// SelectionID is set when this group is the application of an answered
+	// selection ("c3/e0") rather than an automatic change.
+	SelectionID string      `json:"selection_id,omitempty"`
+	Operations  []Operation `json:"operations"`
 }
 
 // Operation is an RFC 6902 JSON Patch operation.
