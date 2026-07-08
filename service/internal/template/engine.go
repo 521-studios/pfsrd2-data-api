@@ -106,7 +106,11 @@ func ApplyWithSelections(creature map[string]any, tmpl TemplateJSON, chosen []Se
 		selections = []any{}
 	}
 
-	applied, err := applySelections(working, statBlock, chosen, byID, pool, tmpl.Sections)
+	// NOTE: ids derive from change/effect indices — stable for a given
+	// template document. Clients storing selections long-term (deep links)
+	// should pin template_version; a data regen that reorders changes
+	// re-points ids.
+	applied, appliedIDs, err := applySelections(working, statBlock, chosen, byID, pool, tmpl.Sections)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +120,7 @@ func ApplyWithSelections(creature map[string]any, tmpl TemplateJSON, chosen []Se
 		PatchDoc: PatchDocument{
 			AppliedPatches:    patches,
 			Selections:        selections,
-			AppliedSelections: appliedSelectionIDs(chosen),
+			AppliedSelections: appliedIDs,
 		},
 		Creature: working,
 	}, nil
@@ -1565,6 +1569,10 @@ func containsWildcard(path string) bool {
 	return strings.Contains(path, "[*]")
 }
 
+// ErrBadSelection marks caller mistakes in the selections payload
+// (unknown id, duplicate, out-of-range option) — handlers map it to 400.
+var ErrBadSelection = errors.New("bad selection")
+
 // selectRef pairs a surfaced selection with its source change/effect.
 type selectRef struct {
 	change Change
@@ -1578,34 +1586,42 @@ type SelectionChoice struct {
 	Effects       []Effect `json:"effects,omitempty"`
 }
 
-func appliedSelectionIDs(chosen []SelectionChoice) []string {
-	ids := []string{}
-	for _, c := range chosen {
-		ids = append(ids, c.ID)
-	}
-	return ids
-}
-
 // applySelections applies the chosen options for each answered selection,
 // producing one patch group per selection (attributed to the selection's
 // change text so the display can highlight and name it).
-func applySelections(working, statBlock map[string]any, chosen []SelectionChoice, byID map[string]selectRef, pool []any, sections []any) ([]PatchGroup, error) {
+func applySelections(working, statBlock map[string]any, chosen []SelectionChoice, byID map[string]selectRef, pool []any, sections []any) ([]PatchGroup, []string, error) {
 	var groups []PatchGroup
+	var appliedIDs []string
+	seen := map[string]bool{}
 	for _, choice := range chosen {
+		if seen[choice.ID] {
+			return nil, nil, fmt.Errorf("%w: selection %q answered twice", ErrBadSelection, choice.ID)
+		}
+		seen[choice.ID] = true
 		ref, ok := byID[choice.ID]
 		if !ok {
-			return nil, fmt.Errorf("selection %q does not exist on this template", choice.ID)
+			return nil, nil, fmt.Errorf("%w: selection %q does not exist on this template", ErrBadSelection, choice.ID)
 		}
 		effects := append([]Effect{}, choice.Effects...)
 		if len(choice.OptionIndices) > 0 {
 			opts, _ := ref.eff.Selection["options"].([]any)
+			if maxOpts, ok := selectionMax(ref.eff.Selection); ok && len(choice.OptionIndices) > maxOpts {
+				return nil, nil, fmt.Errorf("%w: selection %q allows at most %d option(s), got %d",
+					ErrBadSelection, choice.ID, maxOpts, len(choice.OptionIndices))
+			}
+			seenIdx := map[int]bool{}
 			for _, idx := range choice.OptionIndices {
-				if idx < 0 || idx >= len(opts) {
-					return nil, fmt.Errorf("selection %q: option index %d out of range (%d options)", choice.ID, idx, len(opts))
+				if seenIdx[idx] {
+					return nil, nil, fmt.Errorf("%w: selection %q: option %d chosen twice", ErrBadSelection, choice.ID, idx)
 				}
-				parsed, err := effectsFromOption(opts[idx])
+				seenIdx[idx] = true
+				if idx < 0 || idx >= len(opts) {
+					return nil, nil, fmt.Errorf("%w: selection %q: option index %d out of range (%d options)",
+						ErrBadSelection, choice.ID, idx, len(opts))
+				}
+				parsed, err := effectsFromOption(opts[idx], ref.eff.Target)
 				if err != nil {
-					return nil, fmt.Errorf("selection %q option %d: %w", choice.ID, idx, err)
+					return nil, nil, fmt.Errorf("%w: selection %q option %d: %v", ErrBadSelection, choice.ID, idx, err)
 				}
 				effects = append(effects, parsed...)
 			}
@@ -1615,23 +1631,28 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 		}
 		beforeBytes, err := json.Marshal(working)
 		if err != nil {
-			return nil, fmt.Errorf("selection %q: marshal before: %w", choice.ID, err)
+			return nil, nil, fmt.Errorf("selection %q: marshal before: %w", choice.ID, err)
 		}
-		selChange := Change{
-			ChangeCategory: ref.change.ChangeCategory,
-			Text:           ref.change.Text,
-			Effects:        effects,
-		}
-		if err := applyChange(statBlock, selChange, pool, sections); err != nil {
-			return nil, fmt.Errorf("apply selection %q: %w", choice.ID, err)
+		// Each effect applies as its own change: within one change,
+		// non-accumulating ops sharing target+operation collapse to
+		// first-match, which would silently drop multi-option picks.
+		for _, eff := range effects {
+			selChange := Change{
+				ChangeCategory: ref.change.ChangeCategory,
+				Text:           ref.change.Text,
+				Effects:        []Effect{eff},
+			}
+			if err := applyChange(statBlock, selChange, pool, sections); err != nil {
+				return nil, nil, fmt.Errorf("apply selection %q: %w", choice.ID, err)
+			}
 		}
 		afterBytes, err := json.Marshal(working)
 		if err != nil {
-			return nil, fmt.Errorf("selection %q: marshal after: %w", choice.ID, err)
+			return nil, nil, fmt.Errorf("selection %q: marshal after: %w", choice.ID, err)
 		}
 		patch, err := jsondiff.CompareJSON(beforeBytes, afterBytes)
 		if err != nil {
-			return nil, fmt.Errorf("diff selection %q: %w", choice.ID, err)
+			return nil, nil, fmt.Errorf("diff selection %q: %w", choice.ID, err)
 		}
 		if len(patch) > 0 {
 			ops := make([]Operation, len(patch))
@@ -1644,14 +1665,29 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 				SelectionID:    choice.ID,
 				Operations:     ops,
 			})
+			appliedIDs = append(appliedIDs, choice.ID)
 		}
 	}
-	return groups, nil
+	if appliedIDs == nil {
+		appliedIDs = []string{}
+	}
+	return groups, appliedIDs, nil
 }
 
-// effectsFromOption parses a selection option: either a single effect
-// object or a {"effects": [...]} bundle (badge-mirrored trait options).
-func effectsFromOption(opt any) ([]Effect, error) {
+// selectionMax reads selection.max as an int when present.
+func selectionMax(sel map[string]any) (int, bool) {
+	if v, ok := toFloat64(sel["max"]); ok && v > 0 {
+		return int(v), true
+	}
+	return 0, false
+}
+
+// effectsFromOption parses a selection option: a single effect object, a
+// {"effects": [...]} bundle (badge-mirrored trait options), or a bare
+// named object (shipped metal/vampire options are ability objects with no
+// operation) — the latter becomes add_item of that object at the
+// selection's target.
+func effectsFromOption(opt any, target string) ([]Effect, error) {
 	raw, err := json.Marshal(opt)
 	if err != nil {
 		return nil, err
@@ -1667,7 +1703,12 @@ func effectsFromOption(opt any) ([]Effect, error) {
 		return nil, err
 	}
 	if single.Operation == "" {
-		return nil, fmt.Errorf("option has no operation")
+		if m, ok := opt.(map[string]any); ok {
+			if name, _ := m["name"].(string); name != "" && target != "" {
+				return []Effect{{Operation: "add_item", Target: target, Item: m}}, nil
+			}
+		}
+		return nil, fmt.Errorf("option has no operation and no name/target to add")
 	}
 	return []Effect{single}, nil
 }

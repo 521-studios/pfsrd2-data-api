@@ -956,4 +956,67 @@ func TestApplyWithSelectionsClientEffects(t *testing.T) {
 	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{3}}}); err == nil {
 		t.Fatal("out-of-range option must error")
 	}
+	// duplicate ids error (double-application guard)
+	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0"}, {ID: "c0/e0"}}); err == nil {
+		t.Fatal("duplicate selection ids must error")
+	}
+}
+
+func TestSelectionsMaxAndBareOptions(t *testing.T) {
+	tmplJSON := []byte(`{
+		"name": "Metal",
+		"monster_template": {
+			"name": "Metal",
+			"changes": [{
+				"change_category": "abilities",
+				"text": "Choose one of the following.",
+				"effects": [{
+					"operation": "select",
+					"target": "$.defense.automatic_abilities",
+					"selection": {
+						"min": 1, "max": 1,
+						"options": [
+							{"name": "Rust Aura", "subtype": "ability", "type": "stat_block_section"},
+							{"name": "Shrapnel Burst", "subtype": "ability", "type": "stat_block_section"}
+						]
+					}
+				}]
+			}]
+		}
+	}`)
+	var tmpl TemplateJSON
+	if err := json.Unmarshal(tmplJSON, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	creature := map[string]any{"stat_block": map[string]any{"defense": map[string]any{}}}
+
+	// bare ability-object option (shipped metal/vampire shape) -> add_item at target
+	res, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auto := res.Creature["stat_block"].(map[string]any)["defense"].(map[string]any)["automatic_abilities"].([]any)
+	if len(auto) != 1 || auto[0].(map[string]any)["name"] != "Rust Aura" {
+		t.Fatalf("bare option not applied: %v", auto)
+	}
+	if len(res.PatchDoc.AppliedSelections) != 1 {
+		t.Fatalf("applied_selections should list the applied id: %v", res.PatchDoc.AppliedSelections)
+	}
+
+	// max enforced
+	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{0, 1}}}); err == nil {
+		t.Fatal("exceeding selection.max must error")
+	}
+	// duplicate option index enforced
+	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{0, 0}}}); err == nil {
+		t.Fatal("duplicate option indices must error")
+	}
+	// empty choice: no application, no echo
+	res, err = ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.PatchDoc.AppliedSelections) != 0 {
+		t.Fatalf("empty choice must not echo as applied: %v", res.PatchDoc.AppliedSelections)
+	}
 }

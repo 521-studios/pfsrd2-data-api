@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -502,6 +503,10 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := template.ApplyWithSelections(body.Creature, tmpl, body.Selections)
 	if err != nil {
+		if errors.Is(err, template.ErrBadSelection) {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
