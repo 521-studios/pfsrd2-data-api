@@ -213,12 +213,13 @@ func (h *handler) sources(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listType(w http.ResponseWriter, r *http.Request) {
 	p := db.ListParams{
-		Type:    chi.URLParam(r, "type"),
-		Source:  r.URL.Query().Get("source"),
-		Edition: r.URL.Query().Get("edition"),
-		Level:   r.URL.Query().Get("level"),
-		Limit:   queryInt(r, "limit", 20),
-		Offset:  queryInt(r, "offset", 0),
+		Type:         chi.URLParam(r, "type"),
+		Source:       r.URL.Query().Get("source"),
+		Edition:      r.URL.Query().Get("edition"),
+		Level:        r.URL.Query().Get("level"),
+		Limit:        queryInt(r, "limit", 20),
+		Offset:       queryInt(r, "offset", 0),
+		ApplicableTo: r.URL.Query().Get("applicable_to"),
 	}
 	result, err := db.List(r.Context(), db.Global(), p)
 	if err != nil {
@@ -532,6 +533,22 @@ func resolveTemplateEntry(ctx context.Context, d *sql.DB, templateGameID string,
 			}
 			if altEntry != nil {
 				return altEntry, nil
+			}
+		}
+		// No same-type alternate: the rules carrier may have changed TYPE
+		// across editions (BotD vampire template <-> Monster Core vampire
+		// family) — try the curated equivalents.
+		equivGameID, err := db.GetEquivalentGameID(ctx, d, templateGameID, *creatureEdition)
+		if err != nil {
+			return nil, err
+		}
+		if equivGameID != "" {
+			equivEntry, err := db.GetByGameID(ctx, d, equivGameID)
+			if err != nil {
+				return nil, err
+			}
+			if equivEntry != nil {
+				return equivEntry, nil
 			}
 		}
 	}
