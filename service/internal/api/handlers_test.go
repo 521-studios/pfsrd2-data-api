@@ -1609,3 +1609,30 @@ func TestApplicableToIgnoresDanglingEquivalent(t *testing.T) {
 	}
 	t.Fatal("dangling equivalents row suppressed an entry from the applicable_to view")
 }
+
+func TestSearchEndpointHonorsApplicableTo(t *testing.T) {
+	// /search must honor applicable_to like /{type} does — the picker uses
+	// the search endpoint.
+	setupTestDB(t)
+	seedEquivalencePair(t, db.Global())
+	r := newTestRouter()
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search?type=monster_templates&applicable_to=remastered&limit=50", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Results []struct {
+			GameID string `json:"game_id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range res.Results {
+		if e.GameID == "botd-vampire-tmpl" {
+			t.Fatal("search endpoint ignored applicable_to: paired legacy template listed for remastered")
+		}
+	}
+}
