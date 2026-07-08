@@ -116,14 +116,15 @@ type handler struct {
 
 func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	p := db.SearchParams{
-		Q:       r.URL.Query().Get("q"),
-		Type:    r.URL.Query().Get("type"),
-		Level:   r.URL.Query().Get("level"),
-		Source:  r.URL.Query().Get("source"),
-		Edition: r.URL.Query().Get("edition"),
-		Traits:  r.URL.Query().Get("traits"),
-		Limit:   queryInt(r, "limit", 20),
-		Offset:  queryInt(r, "offset", 0),
+		Q:            r.URL.Query().Get("q"),
+		Type:         r.URL.Query().Get("type"),
+		Level:        r.URL.Query().Get("level"),
+		Source:       r.URL.Query().Get("source"),
+		Edition:      r.URL.Query().Get("edition"),
+		Traits:       r.URL.Query().Get("traits"),
+		Limit:        queryInt(r, "limit", 20),
+		Offset:       queryInt(r, "offset", 0),
+		ApplicableTo: r.URL.Query().Get("applicable_to"),
 	}
 	result, err := db.Search(r.Context(), db.Global(), p)
 	if err != nil {
