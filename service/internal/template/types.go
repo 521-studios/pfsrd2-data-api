@@ -5,8 +5,19 @@ package template
 // TemplateJSON mirrors the top-level monster template JSON structure.
 // We only decode the fields the engine needs.
 type TemplateJSON struct {
-	Name            string          `json:"name"`
-	MonsterTemplate MonsterTemplate `json:"monster_template"`
+	Name            string           `json:"name"`
+	MonsterTemplate MonsterTemplate  `json:"monster_template"`
+	MonsterFamily   *MonsterTemplate `json:"monster_family,omitempty"`
+}
+
+// Rules returns the applicable rules object: monster families carry their
+// changes under "monster_family" instead of "monster_template" but share
+// the same shape (changes, abilities, adjustments).
+func (t *TemplateJSON) Rules() MonsterTemplate {
+	if t.MonsterFamily != nil {
+		return *t.MonsterFamily
+	}
+	return t.MonsterTemplate
 }
 
 // MonsterTemplate is the nested object containing the changes array.

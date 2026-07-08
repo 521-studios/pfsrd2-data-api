@@ -610,3 +610,54 @@ func TestWildcard_AddItem_EmptyArrayCleanup(t *testing.T) {
 		t.Errorf("expected weaknesses to be absent (all conditionals failed), got %v", hp["weaknesses"])
 	}
 }
+
+func TestApplyMonsterFamilyRules(t *testing.T) {
+	// Families carry changes under "monster_family"; the engine must apply
+	// them identically to template changes (legacy Lich: level +1).
+	tmplJSON := []byte(`{
+		"name": "Lich",
+		"monster_family": {
+			"name": "Lich",
+			"changes": [{
+				"change_category": "level",
+				"text": "Increase the spellcaster's level by 1.",
+				"effects": [{
+					"operation": "adjustment",
+					"target": "$.creature_type.level",
+					"value": 1
+				}]
+			}]
+		}
+	}`)
+	var tmpl TemplateJSON
+	if err := json.Unmarshal(tmplJSON, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	creature := map[string]any{
+		"name": "Test Caster",
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{"level": float64(11)},
+		},
+	}
+	result, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := result.Creature["stat_block"].(map[string]any)
+	ct := sb["creature_type"].(map[string]any)
+	if lvl := ct["level"]; lvl != float64(12) {
+		t.Fatalf("family level change not applied: got %v want 12", lvl)
+	}
+}
+
+func TestRulesPrefersFamilyWhenPresent(t *testing.T) {
+	fam := MonsterTemplate{Name: "Fam"}
+	tj := TemplateJSON{MonsterTemplate: MonsterTemplate{Name: "Tmpl"}, MonsterFamily: &fam}
+	if tj.Rules().Name != "Fam" {
+		t.Fatal("Rules() must prefer monster_family")
+	}
+	tj2 := TemplateJSON{MonsterTemplate: MonsterTemplate{Name: "Tmpl"}}
+	if tj2.Rules().Name != "Tmpl" {
+		t.Fatal("Rules() must fall back to monster_template")
+	}
+}
