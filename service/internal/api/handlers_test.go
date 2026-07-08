@@ -1588,3 +1588,24 @@ func TestListApplicableTo(t *testing.T) {
 		t.Error("alternates-paired templates must resolve to the creature's edition only")
 	}
 }
+
+func TestApplicableToIgnoresDanglingEquivalent(t *testing.T) {
+	setupTestDB(t)
+	d := db.Global()
+	seedEquivalencePair(t, d)
+	// dangling curated row: target game_id has no entries row
+	mustExec(t, d, `INSERT INTO equivalents VALUES('botd-wight-tmpl', 'typo-no-such-entry', 'remastered')`)
+
+	res, err := db.Search(context.Background(), d, db.SearchParams{
+		ApplicableTo: "remastered", Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range res.Results {
+		if e.GameID == "botd-wight-tmpl" {
+			return // still listed despite the dangling row
+		}
+	}
+	t.Fatal("dangling equivalents row suppressed an entry from the applicable_to view")
+}

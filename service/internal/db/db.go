@@ -164,7 +164,10 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 	if p.ApplicableTo != "" {
 		equivClause := ""
 		if hasTable(ctx, db, "equivalents") {
+			// JOIN entries so a dangling curated row (typo'd game_id)
+			// can never suppress an entry whose counterpart doesn't exist
 			equivClause = " AND NOT EXISTS (SELECT 1 FROM equivalents q" +
+				" JOIN entries qe ON qe.game_id = q.equivalent_game_id" +
 				" WHERE q.game_id = e.game_id AND q.equivalent_edition = ?)"
 		}
 		cond := "(e.edition = ? OR e.edition IS NULL OR (" +
