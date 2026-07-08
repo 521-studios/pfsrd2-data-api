@@ -101,15 +101,15 @@ resource "aws_iam_policy" "indexer_s3" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "IndexerObjectAccess"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:HeadObject"]
+        Sid      = "IndexerObjectAccess"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:HeadObject"]
         Resource = "${aws_s3_bucket.data.arn}/*"
       },
       {
-        Sid    = "IndexerBucketAccess"
-        Effect = "Allow"
-        Action = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Sid      = "IndexerBucketAccess"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
         Resource = aws_s3_bucket.data.arn
       },
     ]
@@ -166,6 +166,7 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = {
       BUCKET_NAME      = aws_s3_bucket.data.id
+      DEFECTS_TABLE    = aws_dynamodb_table.defects.name
       ENV              = var.env
       IMAGE_DOMAIN     = var.app_domain
       WATCHER_INTERVAL = var.watcher_interval
@@ -206,4 +207,49 @@ resource "aws_lambda_permission" "cloudfront_invoke" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api.function_name
   principal     = "cloudfront.amazonaws.com"
+}
+
+# ─── Defect reports ──────────────────────────────────────────────────────────
+#
+# User-submitted "this applied/rendered wrong" records, wyrd pattern
+# (wyrd/defects.py): full reproduction context + required reason, status
+# lifecycle new → accepted | dismissed, triaged via the pf2 defects CLI.
+
+resource "aws_dynamodb_table" "defects" {
+  name         = "521studios-${var.env}-pfsrd2-defects"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+  attribute {
+    name = "status"
+    type = "S"
+  }
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "status-created_at-index"
+    hash_key        = "status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+}
+
+data "aws_iam_policy_document" "defects_write" {
+  statement {
+    actions   = ["dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.defects.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_defects_write" {
+  name   = "pfsrd2-data-api-${var.env}-defects-write"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.defects_write.json
 }
