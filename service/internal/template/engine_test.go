@@ -2,6 +2,7 @@ package template
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -948,13 +949,13 @@ func TestApplyWithSelectionsClientEffects(t *testing.T) {
 	if len(langs) != 1 {
 		t.Fatalf("client effect not applied: %v", langs)
 	}
-	// unknown id errors
-	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c9/e9"}}); err == nil {
-		t.Fatal("unknown selection id must error")
+	// unknown id errors, typed for 400 mapping
+	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c9/e9"}}); !errors.Is(err, ErrBadSelection) {
+		t.Fatalf("unknown selection id must be ErrBadSelection, got %v", err)
 	}
 	// out-of-range option errors
-	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{3}}}); err == nil {
-		t.Fatal("out-of-range option must error")
+	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0", OptionIndices: []int{3}}}); !errors.Is(err, ErrBadSelection) {
+		t.Fatalf("out-of-range option must be ErrBadSelection, got %v", err)
 	}
 	// duplicate ids error (double-application guard)
 	if _, err := ApplyWithSelections(deepCopyMap(creature), tmpl, []SelectionChoice{{ID: "c0/e0"}, {ID: "c0/e0"}}); err == nil {
