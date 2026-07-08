@@ -661,3 +661,52 @@ func TestRulesPrefersFamilyWhenPresent(t *testing.T) {
 		t.Fatal("Rules() must fall back to monster_template")
 	}
 }
+
+func TestApplyAllRealFamilies(t *testing.T) {
+	// Corpus smoke: every real family file must Apply without error
+	// against a minimal creature. Skips when the data checkout is absent
+	// (CI has no pfsrd2-data).
+	root := "/home/devon/MasterworkTools/pfsrd2/pfsrd2-data/monster_families"
+	if _, err := os.Stat(root); err != nil {
+		t.Skip("pfsrd2-data checkout not present")
+	}
+	creature := map[string]any{
+		"name": "Smoke",
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{"level": float64(5)},
+		},
+	}
+	n := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var tmpl TemplateJSON
+		if err := json.Unmarshal(raw, &tmpl); err != nil {
+			t.Errorf("%s: unmarshal: %v", path, err)
+			return nil
+		}
+		if _, err := Apply(deepCopyMap(creature), tmpl); err != nil {
+			t.Errorf("%s: apply: %v", path, err)
+		}
+		n++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 500 {
+		t.Fatalf("expected 600+ family files, walked %d", n)
+	}
+}
+
+func deepCopyMap(m map[string]any) map[string]any {
+	b, _ := json.Marshal(m)
+	var out map[string]any
+	_ = json.Unmarshal(b, &out)
+	return out
+}
