@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -469,10 +470,11 @@ func (h *handler) applyTemplateByID(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Creature       map[string]any         `json:"creature"`
-		TemplateGameID string                 `json:"template_game_id,omitempty"`
-		TemplateVer    string                 `json:"template_version,omitempty"`
-		Template       *template.TemplateJSON `json:"template,omitempty"`
+		Creature       map[string]any             `json:"creature"`
+		TemplateGameID string                     `json:"template_game_id,omitempty"`
+		TemplateVer    string                     `json:"template_version,omitempty"`
+		Template       *template.TemplateJSON     `json:"template,omitempty"`
+		Selections     []template.SelectionChoice `json:"selections,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -499,8 +501,12 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := template.Apply(body.Creature, tmpl)
+	resp, err := template.ApplyWithSelections(body.Creature, tmpl, body.Selections)
 	if err != nil {
+		if errors.Is(err, template.ErrBadSelection) {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
