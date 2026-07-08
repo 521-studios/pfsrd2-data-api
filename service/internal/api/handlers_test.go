@@ -85,6 +85,10 @@ func setupTestDB(t *testing.T) {
 			game_id TEXT NOT NULL, alternate_game_id TEXT NOT NULL,
 			alternate_type TEXT NOT NULL, PRIMARY KEY (game_id, alternate_game_id)
 		);
+		CREATE TABLE equivalents (
+			game_id TEXT NOT NULL, equivalent_game_id TEXT NOT NULL,
+			equivalent_edition TEXT NOT NULL, PRIMARY KEY (game_id, equivalent_game_id)
+		);
 	`
 	if _, err := d.Exec(ddl); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -1471,5 +1475,116 @@ func TestIsNotFound(t *testing.T) {
 	}
 	if isNotFound(fmt.Errorf("connection refused")) {
 		t.Error("connection refused should not be not-found")
+	}
+}
+
+func seedEquivalencePair(t *testing.T, d *sql.DB) {
+	t.Helper()
+	// Legacy BotD vampire TEMPLATE <-> remastered Monster Core vampire FAMILY
+	mustExec(t, d, `INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, level, source, edition, attrs, search_text)
+		VALUES('botd-vampire-tmpl', 'monster_templates', 'Vampire', '1.0', 'monster_templates/book_of_the_dead/vampire.json', 'json/monster_templates/1.0/book_of_the_dead/vampire.json', NULL, 'Book of the Dead', 'legacy', '{}', 'Vampire')`)
+	mustExec(t, d, `INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, level, source, edition, attrs, search_text)
+		VALUES('mc-vampire-fam', 'monster_families', 'Vampire', '1.0', 'monster_families/monster_core/vampire.json', 'json/monster_families/1.0/monster_core/vampire.json', NULL, 'Monster Core', 'remastered', '{}', 'Vampire')`)
+	// Unpaired legacy template (no remastered rules exist)
+	mustExec(t, d, `INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, level, source, edition, attrs, search_text)
+		VALUES('botd-wight-tmpl', 'monster_templates', 'Wight', '1.0', 'monster_templates/book_of_the_dead/wight.json', 'json/monster_templates/1.0/book_of_the_dead/wight.json', NULL, 'Book of the Dead', 'legacy', '{}', 'Wight')`)
+	mustExec(t, d, `INSERT INTO equivalents VALUES('botd-vampire-tmpl', 'mc-vampire-fam', 'remastered')`)
+	mustExec(t, d, `INSERT INTO equivalents VALUES('mc-vampire-fam', 'botd-vampire-tmpl', 'legacy')`)
+}
+
+func mustExec(t *testing.T, d *sql.DB, q string, args ...any) {
+	t.Helper()
+	if _, err := d.Exec(q, args...); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+}
+
+func TestResolveTemplateEntryEquivalentFallback(t *testing.T) {
+	setupTestDB(t)
+	d := db.Global()
+	seedEquivalencePair(t, d)
+
+	// Remastered creature + legacy BotD vampire template -> resolves to the
+	// remastered Monster Core vampire FAMILY via the curated equivalent.
+	rem := "remastered"
+	entry, err := resolveTemplateEntry(context.Background(), d, "botd-vampire-tmpl", &rem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry == nil || entry.GameID != "mc-vampire-fam" {
+		t.Fatalf("expected equivalent hop to mc-vampire-fam, got %+v", entry)
+	}
+
+	// Reverse: legacy creature + remastered family -> BotD template.
+	leg := "legacy"
+	entry, err = resolveTemplateEntry(context.Background(), d, "mc-vampire-fam", &leg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry == nil || entry.GameID != "botd-vampire-tmpl" {
+		t.Fatalf("expected reverse hop to botd-vampire-tmpl, got %+v", entry)
+	}
+
+	// Unpaired: legacy wight template + remastered creature -> stays itself
+	// (documented apply-as-is behavior).
+	entry, err = resolveTemplateEntry(context.Background(), d, "botd-wight-tmpl", &rem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry == nil || entry.GameID != "botd-wight-tmpl" {
+		t.Fatalf("expected unpaired template to stay itself, got %+v", entry)
+	}
+}
+
+func TestListApplicableTo(t *testing.T) {
+	setupTestDB(t)
+	d := db.Global()
+	seedEquivalencePair(t, d)
+
+	// For a REMASTERED creature: remastered family lists; its legacy
+	// equivalent (BotD vampire template) is suppressed; the unpaired legacy
+	// wight template still lists.
+	res, err := db.Search(context.Background(), d, db.SearchParams{
+		ApplicableTo: "remastered", Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range res.Results {
+		got[e.GameID] = true
+	}
+	if !got["mc-vampire-fam"] {
+		t.Error("remastered family must list for remastered")
+	}
+	if got["botd-vampire-tmpl"] {
+		t.Error("legacy template with a remastered equivalent must be suppressed")
+	}
+	if !got["botd-wight-tmpl"] {
+		t.Error("unpaired legacy template must still list for remastered")
+	}
+
+	// For a LEGACY creature: BotD vampire + wight list; the remastered
+	// family is suppressed (its legacy equivalent exists).
+	res, err = db.Search(context.Background(), d, db.SearchParams{
+		ApplicableTo: "legacy", Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]bool{}
+	for _, e := range res.Results {
+		got[e.GameID] = true
+	}
+	if !got["botd-vampire-tmpl"] || !got["botd-wight-tmpl"] {
+		t.Error("legacy templates must list for legacy")
+	}
+	if got["mc-vampire-fam"] {
+		t.Error("remastered family with a legacy equivalent must be suppressed")
+	}
+	// Elite (both editions, linked via alternates): exactly the legacy one
+	// lists for legacy.
+	if !got["MonsterTemplates:1"] || got["MonsterTemplates:22"] {
+		t.Error("alternates-paired templates must resolve to the creature's edition only")
 	}
 }

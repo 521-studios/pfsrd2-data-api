@@ -110,6 +110,21 @@ type SearchParams struct {
 	Traits  string // comma-separated
 	Limit   int    // default 20
 	Offset  int
+	// ApplicableTo filters for a creature's edition: entries of that
+	// edition (or edition-less), plus other-edition entries with no
+	// same-edition counterpart via alternates or curated equivalents —
+	// so unpaired content (BotD wight, jiang-shi) still lists, while
+	// paired content never double-lists.
+	ApplicableTo string
+}
+
+// hasTable reports whether a table exists — older index DBs predate the
+// equivalents table and must not break search.
+func hasTable(ctx context.Context, db *sql.DB, name string) bool {
+	var n int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&n)
+	return err == nil && n > 0
 }
 
 // SearchResult is returned by Search.
@@ -145,6 +160,22 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 	if p.Edition != "" {
 		conds = append(conds, "e.edition = ?")
 		args = append(args, p.Edition)
+	}
+	if p.ApplicableTo != "" {
+		equivClause := ""
+		if hasTable(ctx, db, "equivalents") {
+			equivClause = " AND NOT EXISTS (SELECT 1 FROM equivalents q" +
+				" WHERE q.game_id = e.game_id AND q.equivalent_edition = ?)"
+		}
+		cond := "(e.edition = ? OR e.edition IS NULL OR (" +
+			"NOT EXISTS (SELECT 1 FROM alternates a" +
+			" WHERE a.game_id = e.game_id AND a.alternate_type = ?)" +
+			equivClause + "))"
+		conds = append(conds, cond)
+		args = append(args, p.ApplicableTo, p.ApplicableTo)
+		if equivClause != "" {
+			args = append(args, p.ApplicableTo)
+		}
 	}
 	if p.Traits != "" {
 		// Filter: any of the requested traits appear in attrs.traits JSON array.
@@ -223,23 +254,25 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 
 // ListParams for GET /{type}
 type ListParams struct {
-	Type    string
-	Source  string
-	Edition string
-	Level   string
-	Limit   int
-	Offset  int
+	Type         string
+	Source       string
+	Edition      string
+	Level        string
+	Limit        int
+	Offset       int
+	ApplicableTo string
 }
 
 // List returns a paginated list of entries for a given type.
 func List(ctx context.Context, db *sql.DB, p ListParams) (*SearchResult, error) {
 	return Search(ctx, db, SearchParams{
-		Type:    p.Type,
-		Source:  p.Source,
-		Edition: p.Edition,
-		Level:   p.Level,
-		Limit:   p.Limit,
-		Offset:  p.Offset,
+		Type:         p.Type,
+		Source:       p.Source,
+		Edition:      p.Edition,
+		Level:        p.Level,
+		Limit:        p.Limit,
+		Offset:       p.Offset,
+		ApplicableTo: p.ApplicableTo,
 	})
 }
 
@@ -312,6 +345,28 @@ func GetAlternateGameID(ctx context.Context, db *sql.DB, gameID, wantEdition str
 		return "", fmt.Errorf("get alternate: %w", err)
 	}
 	return altGameID, nil
+}
+
+// GetEquivalentGameID looks up the curated cross-type edition equivalent
+// (e.g. Book of the Dead vampire template <-> Monster Core vampire family).
+// Used as an edition-resolution fallback after alternates. Returns "" when
+// no equivalent exists — including on older index DBs without the table.
+func GetEquivalentGameID(ctx context.Context, db *sql.DB, gameID, wantEdition string) (string, error) {
+	var equivGameID string
+	err := db.QueryRowContext(ctx, `
+		SELECT equivalent_game_id FROM equivalents
+		WHERE game_id = ? AND equivalent_edition = ?
+	`, gameID, wantEdition).Scan(&equivGameID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return "", nil
+		}
+		return "", fmt.Errorf("get equivalent: %w", err)
+	}
+	return equivGameID, nil
 }
 
 // ---------------------------------------------------------------------------
