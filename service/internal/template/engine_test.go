@@ -771,3 +771,70 @@ func TestSectionSourceNoMatchErrors(t *testing.T) {
 		t.Fatal("expected error for unmatched sections source")
 	}
 }
+
+func TestAddItemRaisesExistingLowerSkill(t *testing.T) {
+	// Amphibious: "Add Athletics with a modifier equal to the creature's
+	// highest skill modifier" — Stingray has Athletics +5, Stealth +7:
+	// Athletics must RAISE to 7. An already-higher value stays. Non-value
+	// items keep dedup-skip.
+	tmplJSON := []byte(`{
+		"name": "Amphibious",
+		"monster_template": {
+			"name": "Amphibious",
+			"changes": [{
+				"change_category": "skills",
+				"text": "- Add Athletics with a modifier equal to the creature's highest skill modifier.",
+				"effects": [{
+					"operation": "add_item",
+					"target": "$.statistics.skills",
+					"item": {"name": "Athletics", "subtype": "skill", "type": "stat_block_section"},
+					"value_from": "$.statistics.skills[*].value | max"
+				}]
+			}]
+		}
+	}`)
+	var tmpl TemplateJSON
+	if err := json.Unmarshal(tmplJSON, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(ath float64) map[string]any {
+		return map[string]any{
+			"name": "Stingray",
+			"stat_block": map[string]any{
+				"statistics": map[string]any{
+					"skills": []any{
+						map[string]any{"name": "Athletics", "value": ath},
+						map[string]any{"name": "Stealth", "value": float64(7)},
+					},
+				},
+			},
+		}
+	}
+	result, err := Apply(mk(5), tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills := result.Creature["stat_block"].(map[string]any)["statistics"].(map[string]any)["skills"].([]any)
+	for _, sk := range skills {
+		m := sk.(map[string]any)
+		if m["name"] == "Athletics" {
+			if v, _ := toFloat64(m["value"]); v != 7 {
+				t.Fatalf("Athletics not raised: got %v want 7", m["value"])
+			}
+		}
+	}
+	// already-higher stays
+	result, err = Apply(mk(9), tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills = result.Creature["stat_block"].(map[string]any)["statistics"].(map[string]any)["skills"].([]any)
+	for _, sk := range skills {
+		m := sk.(map[string]any)
+		if m["name"] == "Athletics" {
+			if v, _ := toFloat64(m["value"]); v != 9 {
+				t.Fatalf("higher Athletics clobbered: got %v want 9", m["value"])
+			}
+		}
+	}
+}

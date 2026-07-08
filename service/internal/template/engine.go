@@ -949,6 +949,15 @@ func appendMissing(rv ResolvedValue, items []any) {
 //   - eff.Item is a map: append the item object directly
 //   - eff.Item is a string: append the string directly (e.g., spell notes)
 //   - eff.Name is set: append as string or {name: eff.Name} based on array type
+//
+// numericItemValue extracts a numeric "value" from an item map, if any.
+func numericItemValue(m map[string]any) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	return toFloat64(m["value"])
+}
+
 func applyAddItem(rv ResolvedValue, eff Effect) error {
 	current := rv.Get()
 	arr, ok := current.([]any)
@@ -968,8 +977,29 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		addName = eff.Name
 	}
 
-	// Skip if an item with this name already exists (case-insensitive)
+	// An item with this name already exists (case-insensitive): for
+	// value-bearing items (skills), published "add X with a modifier equal
+	// to Y" semantics RAISE an existing lower value and keep a higher one
+	// (Amphibious: Stingray's Athletics +5 with Stealth +7 becomes +7).
+	// Non-value items (abilities, languages) keep dedup-skip semantics.
 	if addName != "" && arrayContainsName(arr, addName) {
+		newVal, hasNew := numericItemValue(eff.ItemMap())
+		if hasNew {
+			for _, el := range arr {
+				m, ok := el.(map[string]any)
+				if !ok {
+					continue
+				}
+				n, _ := m["name"].(string)
+				if !strings.EqualFold(n, addName) {
+					continue
+				}
+				if oldVal, hasOld := toFloat64(m["value"]); hasOld && newVal > oldVal {
+					m["value"] = newVal
+				}
+				return nil
+			}
+		}
 		return nil
 	}
 
