@@ -38,7 +38,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 			return nil, fmt.Errorf("marshal before snapshot: %w", err)
 		}
 
-		if err := applyChange(statBlock, change, pool); err != nil {
+		if err := applyChange(statBlock, change, pool, tmpl.Sections); err != nil {
 			return nil, fmt.Errorf("apply change %q: %w", change.ChangeCategory, err)
 		}
 
@@ -278,14 +278,14 @@ func groupEffects(effects []Effect) [][]Effect {
 
 // applyChange applies all effects within a single Change to the stat_block.
 // pool is the template's full ability collection for add_items sources.
-func applyChange(statBlock map[string]any, change Change, pool []any) error {
+func applyChange(statBlock map[string]any, change Change, pool []any, sections []any) error {
 	for _, effects := range groupEffects(change.Effects) {
 		// add_items is special — it draws items from the template's ability
 		// pool. Grouping is keyed by target+operation, so an add_items group
 		// contains only add_items effects.
 		if effects[0].Operation == "add_items" {
 			for _, eff := range effects {
-				if err := applyAddItems(statBlock, eff, pool); err != nil {
+				if err := applyAddItems(statBlock, eff, pool, sections); err != nil {
 					ident := eff.Source
 					if eff.Item != nil {
 						ident = "ability " + abilityName(eff.Item)
@@ -814,12 +814,19 @@ func unfilteredPoolItems(pool []any, target string) map[string][]any {
 // the target they belong on. Selection modes, in order: an ability carried
 // on eff.Item (synthesized changes, already routed by category); a
 // name-filtered source; an unfiltered source routing the whole pool.
-func collectPoolItems(eff Effect, pool []any) (map[string][]any, error) {
+func collectPoolItems(eff Effect, pool []any, sections []any) (map[string][]any, error) {
 	if eff.Item != nil {
 		return map[string][]any{eff.Target: {itemForTarget(eff.Item, eff.Target)}}, nil
 	}
 	if eff.Source == "" {
 		return nil, fmt.Errorf("add_items effect has neither item nor source")
+	}
+	if strings.HasPrefix(eff.Source, "$.sections") {
+		items, err := sectionAbilities(sections, eff.Source, eff.Target)
+		if err != nil {
+			return nil, err
+		}
+		return map[string][]any{eff.Target: items}, nil
 	}
 	if strings.Contains(eff.Source, "[?(") {
 		m := sourceNameFilter.FindStringSubmatch(eff.Source)
@@ -831,11 +838,53 @@ func collectPoolItems(eff Effect, pool []any) (map[string][]any, error) {
 	return unfilteredPoolItems(pool, eff.Target), nil
 }
 
+// sectionAbilities resolves a family change source that points into the
+// display sections tree ($.sections[?(@.name=='X')]...abilities): the LAST
+// name filter identifies the section (family section names are unique per
+// page); its abilities array is the pool. Zero matches is template-data
+// error — a silent no-op loses grants.
+func sectionAbilities(sections []any, source, target string) ([]any, error) {
+	filters := sectionNameFilters.FindAllStringSubmatch(source, -1)
+	if len(filters) == 0 {
+		return nil, fmt.Errorf("no name filter in sections source %q", source)
+	}
+	want := strings.ToLower(filters[len(filters)-1][1])
+	var found []any
+	var walk func(nodes []any)
+	walk = func(nodes []any) {
+		for _, n := range nodes {
+			sec, ok := n.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.ToLower(fmt.Sprint(sec["name"])) == want {
+				if abs, ok := sec["abilities"].([]any); ok {
+					found = append(found, abs...)
+				}
+			}
+			if subs, ok := sec["sections"].([]any); ok {
+				walk(subs)
+			}
+		}
+	}
+	walk(sections)
+	if len(found) == 0 {
+		return nil, fmt.Errorf("sections source %q matched no abilities", source)
+	}
+	items := make([]any, 0, len(found))
+	for _, a := range found {
+		items = append(items, itemForTarget(a, target))
+	}
+	return items, nil
+}
+
+var sectionNameFilters = regexp.MustCompile(`\[\?\(@\.name=='((?:[^'\\]|\\.)*)'\)\]`)
+
 // applyAddItems appends the abilities selected by collectPoolItems to their
 // containers, creating missing arrays and deduplicating by name
 // (case-insensitive).
-func applyAddItems(statBlock map[string]any, eff Effect, pool []any) error {
-	byTarget, err := collectPoolItems(eff, pool)
+func applyAddItems(statBlock map[string]any, eff Effect, pool []any, sections []any) error {
+	byTarget, err := collectPoolItems(eff, pool, sections)
 	if err != nil {
 		return err
 	}
