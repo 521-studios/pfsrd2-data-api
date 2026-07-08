@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/521studios/pfsrd2-data-api/internal/db"
+	"github.com/521studios/pfsrd2-data-api/internal/defects"
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 	"github.com/521studios/pfsrd2-data-api/internal/startup"
 	"github.com/521studios/pfsrd2-data-api/internal/template"
@@ -100,6 +101,7 @@ func NewRouter(cfg Config) *chi.Mux {
 
 		// /{type} — paginated list
 		// /{type}/{schema_version}/{book}/{filename} — full JSON from S3
+		r.Post("/defects", h.reportDefect)
 		r.Get("/{type}", h.listType)
 		r.Get("/{type}/{schemaVersion}/{book}/{filename}", h.getFullJSON)
 	})
@@ -511,6 +513,38 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeTemplateResult(w, resp)
+}
+
+// ---------------------------------------------------------------------------
+// POST /defects — user-submitted defect report (wyrd pattern)
+// ---------------------------------------------------------------------------
+
+func (h *handler) reportDefect(w http.ResponseWriter, r *http.Request) {
+	var report defects.Report
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&report); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := report.Validate(); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	client, err := defects.NewClient(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "defects client", "err", err)
+		jsonError(w, "defect reporting is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if err := client.Put(r.Context(), &report); err != nil {
+		if errors.Is(err, defects.ErrBadReport) {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		slog.ErrorContext(r.Context(), "defect put", "err", err)
+		jsonError(w, "failed to store defect", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]any{"id": report.ID, "status": report.Status})
 }
 
 // resolveTemplateEntry looks up a template by game_id, and if the creature has
