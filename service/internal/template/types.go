@@ -8,6 +8,9 @@ type TemplateJSON struct {
 	Name            string           `json:"name"`
 	MonsterTemplate MonsterTemplate  `json:"monster_template"`
 	MonsterFamily   *MonsterTemplate `json:"monster_family,omitempty"`
+	// Sections is the display sections tree. Family changes may reference
+	// ability pools that live in sections ($.sections[?(@.name=='X')].abilities).
+	Sections []any `json:"sections,omitempty"`
 }
 
 // Rules returns the applicable rules object: monster families carry their

@@ -674,6 +674,7 @@ func TestApplyAllRealFamilies(t *testing.T) {
 		"name": "Smoke",
 		"stat_block": map[string]any{
 			"creature_type": map[string]any{"level": float64(5)},
+			"defense":       map[string]any{},
 		},
 	}
 	n := 0
@@ -709,4 +710,64 @@ func deepCopyMap(m map[string]any) map[string]any {
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
 	return out
+}
+
+func TestSectionSourceAddItems(t *testing.T) {
+	// Nymph queen grant: the change's source points at a section ability
+	// pool rather than change/template abilities.
+	tmplJSON := []byte(`{
+		"name": "Nymph",
+		"monster_family": {
+			"name": "Nymph",
+			"changes": [{
+				"change_category": "abilities",
+				"text": "She gains the Inspiration ability.",
+				"effects": [{
+					"operation": "add_items",
+					"target": "$.defense.automatic_abilities",
+					"source": "$.sections[?(@.name=='Nymph Queen Abilities')].abilities"
+				}]
+			}]
+		},
+		"sections": [{
+			"name": "Creating Nymph Queens",
+			"sections": [{
+				"name": "Nymph Queen Abilities",
+				"abilities": [
+					{"name": "Inspiration", "subtype": "ability", "type": "stat_block_section"},
+					{"name": "Change Shape", "subtype": "ability", "type": "stat_block_section"}
+				]
+			}]
+		}]
+	}`)
+	var tmpl TemplateJSON
+	if err := json.Unmarshal(tmplJSON, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	creature := map[string]any{
+		"name":       "Dryad",
+		"stat_block": map[string]any{"defense": map[string]any{}},
+	}
+	result, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := result.Creature["stat_block"].(map[string]any)
+	auto := sb["defense"].(map[string]any)["automatic_abilities"].([]any)
+	if len(auto) != 2 {
+		t.Fatalf("expected 2 granted abilities, got %d", len(auto))
+	}
+}
+
+func TestSectionSourceNoMatchErrors(t *testing.T) {
+	tmpl := TemplateJSON{MonsterFamily: &MonsterTemplate{Changes: []Change{{
+		ChangeCategory: "abilities",
+		Effects: []Effect{{Operation: "add_items",
+			Target: "$.defense.automatic_abilities",
+			Source: "$.sections[?(@.name=='Missing')].abilities"}},
+	}}}}
+	creature := map[string]any{"stat_block": map[string]any{}}
+	if _, err := Apply(creature, tmpl); err == nil {
+		t.Fatal("expected error for unmatched sections source")
+	}
 }
