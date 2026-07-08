@@ -536,6 +536,10 @@ func (h *handler) reportDefect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.Put(r.Context(), &report); err != nil {
+		if errors.Is(err, defects.ErrBadReport) {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		slog.ErrorContext(r.Context(), "defect put", "err", err)
 		jsonError(w, "failed to store defect", http.StatusInternalServerError)
 		return

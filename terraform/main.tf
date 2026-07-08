@@ -219,6 +219,7 @@ resource "aws_dynamodb_table" "defects" {
   name         = "521studios-${var.env}-pfsrd2-defects"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "id"
+  tags         = local.tags
 
   attribute {
     name = "id"
@@ -249,7 +250,7 @@ data "aws_iam_policy_document" "defects_write" {
 }
 
 resource "aws_iam_role_policy" "lambda_defects_write" {
-  name   = "pfsrd2-data-api-${var.env}-defects-write"
+  name   = "${local.name}-${var.env}-defects-write"
   role   = aws_iam_role.lambda.id
   policy = data.aws_iam_policy_document.defects_write.json
 }

@@ -8,8 +8,10 @@ package defects
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -46,13 +48,35 @@ type Report struct {
 	TriageNote    string           `json:"triage_note,omitempty"`
 }
 
+// ErrBadReport marks submissions the caller must fix — handlers map to 400.
+var ErrBadReport = errors.New("bad defect report")
+
+// Field caps: a valid <=1MB request body can still exceed DynamoDB's
+// 400KB item limit, which would surface as a 500 for a client problem —
+// and unbounded fields are the garbage-growth abuse vector.
+const (
+	maxReasonLen        = 2 << 10  // 2KB
+	maxRenderedValueLen = 64 << 10 // 64KB
+	maxStackEntries     = 50
+	maxItemBytes        = 350 << 10 // headroom under DynamoDB's 400KB
+)
+
 // Validate enforces the submission contract.
 func (r *Report) Validate() error {
 	if r.Reason == "" {
-		return fmt.Errorf("reason is required")
+		return fmt.Errorf("%w: reason is required", ErrBadReport)
 	}
 	if r.CreatureGameID == "" {
-		return fmt.Errorf("creature_game_id is required")
+		return fmt.Errorf("%w: creature_game_id is required", ErrBadReport)
+	}
+	if len(r.Reason) > maxReasonLen {
+		return fmt.Errorf("%w: reason exceeds %d bytes", ErrBadReport, maxReasonLen)
+	}
+	if len(r.RenderedValue) > maxRenderedValueLen {
+		return fmt.Errorf("%w: rendered_value exceeds %d bytes", ErrBadReport, maxRenderedValueLen)
+	}
+	if len(r.TemplateStack) > maxStackEntries {
+		return fmt.Errorf("%w: template_stack exceeds %d entries", ErrBadReport, maxStackEntries)
 	}
 	return nil
 }
@@ -63,18 +87,22 @@ type Client struct {
 	table string
 }
 
-// NewClient builds a client from the environment (Lambda execution role or
-// ambient credentials). Table from DEFECTS_TABLE.
-func NewClient(ctx context.Context) (*Client, error) {
+var newClientOnce = sync.OnceValues(func() (*Client, error) {
 	table := os.Getenv(EnvTable)
 	if table == "" {
 		return nil, fmt.Errorf("%s is not set", EnvTable)
 	}
-	cfg, err := config.LoadDefaultConfig(ctx)
+	cfg, err := config.LoadDefaultConfig(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("aws config: %w", err)
 	}
 	return &Client{ddb: dynamodb.NewFromConfig(cfg), table: table}, nil
+})
+
+// NewClient returns the process-wide client (connection reuse per Lambda
+// container). Table from DEFECTS_TABLE.
+func NewClient(_ context.Context) (*Client, error) {
+	return newClientOnce()
 }
 
 // Put stores a new report, stamping id/created_at/status.
@@ -113,6 +141,9 @@ func (c *Client) Put(ctx context.Context, r *Report) error {
 			item[k] = &types.AttributeValueMemberS{Value: v}
 		}
 	}
+	if size := approxItemBytes(item); size > maxItemBytes {
+		return fmt.Errorf("%w: report is too large (%d bytes)", ErrBadReport, size)
+	}
 	_, err = c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(c.table),
 		Item:      item,
@@ -121,6 +152,18 @@ func (c *Client) Put(ctx context.Context, r *Report) error {
 		return fmt.Errorf("put defect: %w", err)
 	}
 	return nil
+}
+
+// approxItemBytes estimates the stored size of an all-string item.
+func approxItemBytes(item map[string]types.AttributeValue) int {
+	n := 0
+	for k, v := range item {
+		n += len(k)
+		if s, ok := v.(*types.AttributeValueMemberS); ok {
+			n += len(s.Value)
+		}
+	}
+	return n
 }
 
 // ListByStatus queries the GSI, newest first.
@@ -190,6 +233,10 @@ func (c *Client) SetStatus(ctx context.Context, id, status, ticket, note string)
 		ConditionExpression:       aws.String("attribute_exists(id)"),
 	})
 	if err != nil {
+		var cond *types.ConditionalCheckFailedException
+		if errors.As(err, &cond) {
+			return fmt.Errorf("no defect %s", id)
+		}
 		return fmt.Errorf("update defect %s: %w", id, err)
 	}
 	return nil
