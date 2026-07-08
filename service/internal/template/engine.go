@@ -29,7 +29,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 
 	var patches []PatchGroup
 
-	changes, pool := effectiveChanges(tmpl.MonsterTemplate)
+	changes, pool := effectiveChanges(tmpl.Rules())
 
 	for _, change := range changes {
 		// Snapshot before this change category
@@ -72,7 +72,7 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 
 	// Collect select operations as selections for the client
 	var selections []any
-	for _, change := range tmpl.MonsterTemplate.Changes {
+	for _, change := range tmpl.Rules().Changes {
 		for _, eff := range change.Effects {
 			if eff.Operation == "select" && eff.Selection != nil {
 				sel := map[string]any{

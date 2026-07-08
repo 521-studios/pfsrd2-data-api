@@ -610,3 +610,103 @@ func TestWildcard_AddItem_EmptyArrayCleanup(t *testing.T) {
 		t.Errorf("expected weaknesses to be absent (all conditionals failed), got %v", hp["weaknesses"])
 	}
 }
+
+func TestApplyMonsterFamilyRules(t *testing.T) {
+	// Families carry changes under "monster_family"; the engine must apply
+	// them identically to template changes (legacy Lich: level +1).
+	tmplJSON := []byte(`{
+		"name": "Lich",
+		"monster_family": {
+			"name": "Lich",
+			"changes": [{
+				"change_category": "level",
+				"text": "Increase the spellcaster's level by 1.",
+				"effects": [{
+					"operation": "adjustment",
+					"target": "$.creature_type.level",
+					"value": 1
+				}]
+			}]
+		}
+	}`)
+	var tmpl TemplateJSON
+	if err := json.Unmarshal(tmplJSON, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	creature := map[string]any{
+		"name": "Test Caster",
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{"level": float64(11)},
+		},
+	}
+	result, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := result.Creature["stat_block"].(map[string]any)
+	ct := sb["creature_type"].(map[string]any)
+	if lvl := ct["level"]; lvl != float64(12) {
+		t.Fatalf("family level change not applied: got %v want 12", lvl)
+	}
+}
+
+func TestRulesPrefersFamilyWhenPresent(t *testing.T) {
+	fam := MonsterTemplate{Name: "Fam"}
+	tj := TemplateJSON{MonsterTemplate: MonsterTemplate{Name: "Tmpl"}, MonsterFamily: &fam}
+	if tj.Rules().Name != "Fam" {
+		t.Fatal("Rules() must prefer monster_family")
+	}
+	tj2 := TemplateJSON{MonsterTemplate: MonsterTemplate{Name: "Tmpl"}}
+	if tj2.Rules().Name != "Tmpl" {
+		t.Fatal("Rules() must fall back to monster_template")
+	}
+}
+
+func TestApplyAllRealFamilies(t *testing.T) {
+	// Corpus smoke: every real family file must Apply without error
+	// against a minimal creature. Skips when the data checkout is absent
+	// (CI has no pfsrd2-data).
+	root := "/home/devon/MasterworkTools/pfsrd2/pfsrd2-data/monster_families"
+	if _, err := os.Stat(root); err != nil {
+		t.Skip("pfsrd2-data checkout not present")
+	}
+	creature := map[string]any{
+		"name": "Smoke",
+		"stat_block": map[string]any{
+			"creature_type": map[string]any{"level": float64(5)},
+		},
+	}
+	n := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var tmpl TemplateJSON
+		if err := json.Unmarshal(raw, &tmpl); err != nil {
+			t.Errorf("%s: unmarshal: %v", path, err)
+			return nil
+		}
+		if _, err := Apply(deepCopyMap(creature), tmpl); err != nil {
+			t.Errorf("%s: apply: %v", path, err)
+		}
+		n++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 500 {
+		t.Fatalf("expected 600+ family files, walked %d", n)
+	}
+}
+
+func deepCopyMap(m map[string]any) map[string]any {
+	b, _ := json.Marshal(m)
+	var out map[string]any
+	_ = json.Unmarshal(b, &out)
+	return out
+}
