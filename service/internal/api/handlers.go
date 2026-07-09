@@ -503,7 +503,27 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := template.ApplyWithSelections(body.Creature, tmpl, body.Selections)
+	// Spell-swap selections resolve their replacement spells server-side.
+	resolver := template.SpellResolver(func(gameID string) (map[string]any, error) {
+		entry, err := db.GetByGameID(r.Context(), db.Global(), gameID)
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil {
+			return nil, fmt.Errorf("no entry for game_id %q", gameID)
+		}
+		raw, err := h.cfg.S3Client.GetObjectBytes(r.Context(), entry.S3Key)
+		if err != nil {
+			return nil, err
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	})
+
+	resp, err := template.ApplyWithSelectionsResolver(body.Creature, tmpl, body.Selections, resolver)
 	if err != nil {
 		if errors.Is(err, template.ErrBadSelection) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
