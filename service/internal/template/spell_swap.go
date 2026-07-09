@@ -3,6 +3,7 @@ package template
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -183,4 +184,41 @@ func containsFold(names []string, want string) bool {
 func escapeFilterName(name string) string {
 	name = strings.ReplaceAll(name, `\`, `\\`)
 	return strings.ReplaceAll(name, `'`, `\'`)
+}
+
+// skillNameRe: letters, spaces, apostrophes, hyphens — covers standard
+// skills and arbitrary Lores ("Legal Lore", "Sarkoris Lore").
+var skillNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z' -]{0,60}$`)
+
+// chosenSkillRe finds the templating token in pool ability text.
+var chosenSkillRe = regexp.MustCompile(`(?i)the chosen skill`)
+
+// poolWithSkillTemplated deep-copies the ability pool, substituting the
+// chosen skill into any ability that references "the chosen skill" and
+// suffixing its name so the pick is visible in the stat block
+// (Official Bully (Legal Lore)). The returned renames map (old → new name)
+// lets the caller rewrite name-filtered add_items sources to keep matching.
+func poolWithSkillTemplated(pool []any, skill string) ([]any, map[string]string) {
+	out := make([]any, len(pool))
+	renames := map[string]string{}
+	for i, a := range pool {
+		out[i] = a
+		m, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := m["text"].(string)
+		if !strings.Contains(strings.ToLower(text), "the chosen skill") {
+			continue
+		}
+		cp := deepCopy(m).(map[string]any)
+		cp["text"] = chosenSkillRe.ReplaceAllString(text, skill)
+		if name, _ := cp["name"].(string); name != "" {
+			newName := fmt.Sprintf("%s (%s)", name, skill)
+			cp["name"] = newName
+			renames[name] = newName
+		}
+		out[i] = cp
+	}
+	return out, renames
 }

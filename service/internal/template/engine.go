@@ -234,7 +234,7 @@ func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
 	}
 	if strings.Contains(eff.Source, "[?(") {
 		if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
-			return m[1], false, false
+			return unescapeFilterString(m[1]), false, false
 		}
 		return "", false, false
 	}
@@ -251,6 +251,28 @@ func consumedFromChanges(changes []Change) (names map[string]bool, all, senses b
 	names = map[string]bool{}
 	for _, c := range changes {
 		for _, eff := range c.Effects {
+			// add_items nested in selection options consume abilities too
+			// (choose_skill's Official Bully) — without counting them every
+			// apply logs a spurious unconsumed-ability warning.
+			if eff.Operation == "select" && eff.Selection != nil {
+				opts, _ := eff.Selection["options"].([]any)
+				for _, opt := range opts {
+					om, _ := opt.(map[string]any)
+					effList, _ := om["effects"].([]any)
+					for _, oe := range effList {
+						oeMap, _ := oe.(map[string]any)
+						if oeMap["operation"] != "add_items" {
+							continue
+						}
+						if src, _ := oeMap["source"].(string); src != "" {
+							if m := sourceNameFilter.FindStringSubmatch(src); m != nil {
+								names[strings.ToLower(unescapeFilterString(m[1]))] = true
+							}
+						}
+					}
+				}
+				continue
+			}
 			if eff.Operation != "add_items" {
 				continue
 			}
@@ -831,8 +853,11 @@ func abilityToSpecialSense(a any) any {
 }
 
 // sourceNameFilter matches a source path's [?(@.name=='X')] filter; when
-// FindStringSubmatch returns a match, the captured group is the ability name.
-var sourceNameFilter = regexp.MustCompile(`\[\?\(@\.name=='([^']+)'\)\]`)
+// FindStringSubmatch returns a match, the captured group is the ability name
+// (backslash-escaped — run unescapeFilterString before comparing to raw
+// names; choose_skill renames produce names like "Official Bully (O\'Brien
+// Lore)").
+var sourceNameFilter = regexp.MustCompile(`\[\?\(@\.name=='((?:[^'\\]|\\.)*)'\)\]`)
 
 const specialSensesTarget = "$.senses.special_senses"
 
@@ -951,7 +976,7 @@ func collectPoolItems(eff Effect, pool []any, sections []any) (map[string][]any,
 		if m == nil {
 			return nil, fmt.Errorf("unparseable filter in add_items source %q", eff.Source)
 		}
-		return filteredPoolItems(pool, m[1], eff.Target)
+		return filteredPoolItems(pool, unescapeFilterString(m[1]), eff.Target)
 	}
 	return unfilteredPoolItems(pool, eff.Target), nil
 }
@@ -1717,6 +1742,9 @@ type SelectionChoice struct {
 	OptionIndices []int       `json:"option_indices,omitempty"`
 	Effects       []Effect    `json:"effects,omitempty"`
 	SpellSwaps    []SpellSwap `json:"spell_swaps,omitempty"`
+	// Skill answers a choose_skill selection (Corrupt's official bully):
+	// the engine templates it into the granted ability's text and name.
+	Skill string `json:"skill,omitempty"`
 }
 
 // applySelections applies the chosen options for each answered selection,
@@ -1736,6 +1764,36 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 			return nil, nil, fmt.Errorf("%w: selection %q does not exist on this template", ErrBadSelection, choice.ID)
 		}
 		effects := append([]Effect{}, choice.Effects...)
+		choicePool := pool
+		var skillRenames map[string]string
+		if choice.Skill != "" {
+			choice.Skill = strings.TrimSpace(choice.Skill)
+			action, _ := ref.eff.Selection["action"].(string)
+			if action != "choose_skill" {
+				return nil, nil, fmt.Errorf("%w: selection %q does not take a skill", ErrBadSelection, choice.ID)
+			}
+			if !skillNameRe.MatchString(choice.Skill) {
+				return nil, nil, fmt.Errorf("%w: invalid skill name %q", ErrBadSelection, choice.Skill)
+			}
+			choicePool, skillRenames = poolWithSkillTemplated(pool, choice.Skill)
+			// A skill answer implies the selection's sole option when the
+			// client sent no explicit option indices.
+			if len(choice.OptionIndices) == 0 && len(effects) == 0 {
+				opts, _ := ref.eff.Selection["options"].([]any)
+				if len(opts) == 0 {
+					return nil, nil, fmt.Errorf("%w: selection %q has no options to apply", ErrBadSelection, choice.ID)
+				}
+				if len(opts) > 1 {
+					return nil, nil, fmt.Errorf("%w: selection %q has %d options; send option_indices with the skill",
+						ErrBadSelection, choice.ID, len(opts))
+				}
+				parsed, err := effectsFromOption(opts[0], ref.eff.Target)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%w: selection %q: %v", ErrBadSelection, choice.ID, err)
+				}
+				effects = append(effects, parsed...)
+			}
+		}
 		if len(choice.SpellSwaps) > 0 {
 			swapEffs, err := spellSwapEffects(statBlock, ref, choice.SpellSwaps, resolver)
 			if err != nil {
@@ -1769,6 +1827,22 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 		if len(effects) == 0 {
 			continue
 		}
+		// choose_skill renamed the templated pool ability — rewrite
+		// name-filtered sources AFTER all effect assembly so explicit
+		// option_indices effects are covered too. The needle is the raw
+		// authored literal (data sources are written unescaped); the
+		// replacement is escaped for the filter parser.
+		if len(skillRenames) > 0 {
+			for i := range effects {
+				if effects[i].Source == "" {
+					continue
+				}
+				for oldName, newName := range skillRenames {
+					effects[i].Source = strings.ReplaceAll(effects[i].Source,
+						"=='"+oldName+"'", "=='"+escapeFilterName(newName)+"'")
+				}
+			}
+		}
 		beforeBytes, err := json.Marshal(working)
 		if err != nil {
 			return nil, nil, fmt.Errorf("selection %q: marshal before: %w", choice.ID, err)
@@ -1782,7 +1856,7 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 				Text:           ref.change.Text,
 				Effects:        []Effect{eff},
 			}
-			if err := applyChange(statBlock, selChange, pool, sections); err != nil {
+			if err := applyChange(statBlock, selChange, choicePool, sections); err != nil {
 				return nil, nil, fmt.Errorf("apply selection %q: %w", choice.ID, err)
 			}
 		}
