@@ -48,6 +48,7 @@ func InitDB(ctx context.Context, cfg Config) error {
 		// refresh once S3 is reachable again.
 		if _, statErr := os.Stat(dbPath); statErr == nil {
 			log.Printf("[startup] head db failed (%v), using stale local DB", err)
+			status.LocalEtag = readEtag()
 			return openAndSet()
 		}
 		return fmt.Errorf("head db: %w", err)
