@@ -234,7 +234,7 @@ func effectConsumption(eff Effect) (name string, all, sensesOnly bool) {
 	}
 	if strings.Contains(eff.Source, "[?(") {
 		if m := sourceNameFilter.FindStringSubmatch(eff.Source); m != nil {
-			return m[1], false, false
+			return unescapeFilterString(m[1]), false, false
 		}
 		return "", false, false
 	}
@@ -831,8 +831,11 @@ func abilityToSpecialSense(a any) any {
 }
 
 // sourceNameFilter matches a source path's [?(@.name=='X')] filter; when
-// FindStringSubmatch returns a match, the captured group is the ability name.
-var sourceNameFilter = regexp.MustCompile(`\[\?\(@\.name=='([^']+)'\)\]`)
+// FindStringSubmatch returns a match, the captured group is the ability name
+// (backslash-escaped — run unescapeFilterString before comparing to raw
+// names; choose_skill renames produce names like "Official Bully (O\'Brien
+// Lore)").
+var sourceNameFilter = regexp.MustCompile(`\[\?\(@\.name=='((?:[^'\\]|\\.)*)'\)\]`)
 
 const specialSensesTarget = "$.senses.special_senses"
 
@@ -951,7 +954,7 @@ func collectPoolItems(eff Effect, pool []any, sections []any) (map[string][]any,
 		if m == nil {
 			return nil, fmt.Errorf("unparseable filter in add_items source %q", eff.Source)
 		}
-		return filteredPoolItems(pool, m[1], eff.Target)
+		return filteredPoolItems(pool, unescapeFilterString(m[1]), eff.Target)
 	}
 	return unfilteredPoolItems(pool, eff.Target), nil
 }
@@ -1740,7 +1743,9 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 		}
 		effects := append([]Effect{}, choice.Effects...)
 		choicePool := pool
+		var skillRenames map[string]string
 		if choice.Skill != "" {
+			choice.Skill = strings.TrimSpace(choice.Skill)
 			action, _ := ref.eff.Selection["action"].(string)
 			if action != "choose_skill" {
 				return nil, nil, fmt.Errorf("%w: selection %q does not take a skill", ErrBadSelection, choice.ID)
@@ -1748,8 +1753,7 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 			if !skillNameRe.MatchString(choice.Skill) {
 				return nil, nil, fmt.Errorf("%w: invalid skill name %q", ErrBadSelection, choice.Skill)
 			}
-			var renames map[string]string
-			choicePool, renames = poolWithSkillTemplated(pool, choice.Skill)
+			choicePool, skillRenames = poolWithSkillTemplated(pool, choice.Skill)
 			// A skill answer implies the selection's sole option when the
 			// client sent no explicit option indices.
 			if len(choice.OptionIndices) == 0 && len(effects) == 0 {
@@ -1757,22 +1761,15 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 				if len(opts) == 0 {
 					return nil, nil, fmt.Errorf("%w: selection %q has no options to apply", ErrBadSelection, choice.ID)
 				}
+				if len(opts) > 1 {
+					return nil, nil, fmt.Errorf("%w: selection %q has %d options; send option_indices with the skill",
+						ErrBadSelection, choice.ID, len(opts))
+				}
 				parsed, err := effectsFromOption(opts[0], ref.eff.Target)
 				if err != nil {
 					return nil, nil, fmt.Errorf("%w: selection %q: %v", ErrBadSelection, choice.ID, err)
 				}
 				effects = append(effects, parsed...)
-			}
-			// The templated ability was renamed — keep name-filtered
-			// add_items sources matching it.
-			for i := range effects {
-				if effects[i].Source == "" {
-					continue
-				}
-				for oldName, newName := range renames {
-					effects[i].Source = strings.ReplaceAll(effects[i].Source,
-						"=='"+escapeFilterName(oldName)+"'", "=='"+escapeFilterName(newName)+"'")
-				}
 			}
 		}
 		if len(choice.SpellSwaps) > 0 {
@@ -1807,6 +1804,22 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 		}
 		if len(effects) == 0 {
 			continue
+		}
+		// choose_skill renamed the templated pool ability — rewrite
+		// name-filtered sources AFTER all effect assembly so explicit
+		// option_indices effects are covered too. The needle is the raw
+		// authored literal (data sources are written unescaped); the
+		// replacement is escaped for the filter parser.
+		if len(skillRenames) > 0 {
+			for i := range effects {
+				if effects[i].Source == "" {
+					continue
+				}
+				for oldName, newName := range skillRenames {
+					effects[i].Source = strings.ReplaceAll(effects[i].Source,
+						"=='"+oldName+"'", "=='"+escapeFilterName(newName)+"'")
+				}
+			}
 		}
 		beforeBytes, err := json.Marshal(working)
 		if err != nil {

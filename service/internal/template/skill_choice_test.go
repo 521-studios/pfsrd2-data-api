@@ -100,3 +100,50 @@ func TestSkillChoicePoolUntouchedForOthers(t *testing.T) {
 		t.Errorf("template pool mutated: %v", orig["text"])
 	}
 }
+
+// Apostrophe Lores must round-trip the filter rename (skillNameRe admits
+// them; the source parser is escape-aware).
+func TestSkillChoiceApostropheLore(t *testing.T) {
+	creature := map[string]any{"stat_block": map[string]any{"interaction_abilities": []any{}}}
+	res, err := ApplyWithSelections(creature, skillChoiceTmpl(), []SelectionChoice{
+		{ID: "c0/e0", Skill: "O'Brien Lore"},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	ia := res.Creature["stat_block"].(map[string]any)["interaction_abilities"].([]any)
+	if len(ia) != 1 || ia[0].(map[string]any)["name"] != "Official Bully (O'Brien Lore)" {
+		t.Errorf("apostrophe skill not applied: %v", ia)
+	}
+}
+
+// skill + explicit option_indices is the same intent as the auto path and
+// must work (the rename rewrite runs after option assembly).
+func TestSkillChoiceWithExplicitOptionIndex(t *testing.T) {
+	creature := map[string]any{"stat_block": map[string]any{"interaction_abilities": []any{}}}
+	res, err := ApplyWithSelections(creature, skillChoiceTmpl(), []SelectionChoice{
+		{ID: "c0/e0", Skill: "Legal Lore", OptionIndices: []int{0}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	ia := res.Creature["stat_block"].(map[string]any)["interaction_abilities"].([]any)
+	if len(ia) != 1 || ia[0].(map[string]any)["name"] != "Official Bully (Legal Lore)" {
+		t.Errorf("explicit-index skill not applied: %v", ia)
+	}
+}
+
+// Trailing whitespace trims before templating.
+func TestSkillChoiceTrimsWhitespace(t *testing.T) {
+	creature := map[string]any{"stat_block": map[string]any{"interaction_abilities": []any{}}}
+	res, err := ApplyWithSelections(creature, skillChoiceTmpl(), []SelectionChoice{
+		{ID: "c0/e0", Skill: "Legal Lore "},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	ia := res.Creature["stat_block"].(map[string]any)["interaction_abilities"].([]any)
+	if ia[0].(map[string]any)["name"] != "Official Bully (Legal Lore)" {
+		t.Errorf("whitespace not trimmed: %v", ia[0].(map[string]any)["name"])
+	}
+}

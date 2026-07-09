@@ -190,6 +190,9 @@ func escapeFilterName(name string) string {
 // skills and arbitrary Lores ("Legal Lore", "Sarkoris Lore").
 var skillNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z' -]{0,60}$`)
 
+// chosenSkillRe finds the templating token in pool ability text.
+var chosenSkillRe = regexp.MustCompile(`(?i)the chosen skill`)
+
 // poolWithSkillTemplated deep-copies the ability pool, substituting the
 // chosen skill into any ability that references "the chosen skill" and
 // suffixing its name so the pick is visible in the stat block
@@ -209,8 +212,7 @@ func poolWithSkillTemplated(pool []any, skill string) ([]any, map[string]string)
 			continue
 		}
 		cp := deepCopy(m).(map[string]any)
-		re := regexp.MustCompile(`(?i)the chosen skill`)
-		cp["text"] = re.ReplaceAllString(text, skill)
+		cp["text"] = chosenSkillRe.ReplaceAllString(text, skill)
 		if name, _ := cp["name"].(string); name != "" {
 			newName := fmt.Sprintf("%s (%s)", name, skill)
 			cp["name"] = newName
