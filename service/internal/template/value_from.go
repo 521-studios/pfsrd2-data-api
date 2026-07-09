@@ -168,22 +168,23 @@ func resolveHighForLevel(statBlock map[string]any, _ string) (float64, error) {
 		return 0, fmt.Errorf("%w: creature level is not numeric (%T: %v)", ErrValueFromShape, level, level)
 	}
 
-	// PF2e building rules: high skill modifier by level
-	// From Table 2-12: Monster Skill Modifiers (Game Mastery Guide / Monster Core)
+	// PF2e building rules, skills table (GM Core p.116 / AoN Rules 2874):
+	// this is the HIGH column. The previous values were the EXTREME column
+	// verbatim — Corrupt on a level-10 creature granted +25 instead of +22.
 	highSkill := map[int]float64{
-		-1: 8, 0: 9, 1: 10, 2: 11, 3: 13, 4: 15, 5: 16,
-		6: 18, 7: 20, 8: 21, 9: 23, 10: 25, 11: 26, 12: 28,
-		13: 30, 14: 31, 15: 33, 16: 35, 17: 36, 18: 38,
-		19: 40, 20: 41, 21: 43, 22: 45, 23: 46, 24: 48,
+		-1: 5, 0: 6, 1: 7, 2: 8, 3: 10, 4: 12, 5: 13,
+		6: 15, 7: 17, 8: 18, 9: 20, 10: 22, 11: 23, 12: 25,
+		13: 27, 14: 28, 15: 30, 16: 32, 17: 33, 18: 35,
+		19: 37, 20: 38, 21: 40, 22: 42, 23: 43, 24: 45,
 	}
 
 	v, ok := highSkill[int(lvl)]
 	if !ok {
 		// Extrapolate for out-of-range levels
 		if lvl < -1 {
-			v = 8
+			v = 5
 		} else {
-			v = 48
+			v = 45
 		}
 	}
 	return v, nil

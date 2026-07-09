@@ -645,8 +645,8 @@ func TestEvaluateValueFrom_HighForLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Level 5 high skill = 16
-	if val != float64(16) {
-		t.Errorf("expected 16 for level 5 high_for_level, got %v", val)
+	// Level 5 HIGH skill = 13 (GM Core p.116 skills table; 16 is extreme)
+	if val != float64(13) {
+		t.Errorf("expected 13 for level 5 high_for_level, got %v", val)
 	}
 }
