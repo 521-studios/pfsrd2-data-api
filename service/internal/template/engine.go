@@ -525,7 +525,7 @@ func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) erro
 	case "add_item":
 		return applyAddItem(rv, eff)
 	case "replace":
-		return applyReplace(rv, eff)
+		return applyReplace(statBlock, rv, eff)
 	case "remove_item":
 		return applyRemoveItem(rv, eff)
 	case "replace_highest_with":
@@ -717,6 +717,25 @@ func walkAncestors(current any, segments []string, target any, ancestors *[]map[
 	}
 
 	if strings.HasPrefix(seg, "[?(") {
+		// Descend into matching elements just like a wildcard — bailing here
+		// left every filtered target (walk-speed values etc.) without
+		// sibling-text sync.
+		arr, ok := current.([]any)
+		if !ok {
+			return false
+		}
+		for _, elem := range arr {
+			if !matchesFilter(elem, seg) {
+				continue
+			}
+			if m, ok := elem.(map[string]any); ok {
+				*ancestors = append(*ancestors, m)
+				if walkAncestors(elem, rest, target, ancestors) {
+					return true
+				}
+				*ancestors = (*ancestors)[:len(*ancestors)-1]
+			}
+		}
 		return false
 	}
 
@@ -1178,8 +1197,17 @@ func arrayContainsName(arr []any, name string) bool {
 }
 
 // applyReplace sets the target to the given value.
-func applyReplace(rv ResolvedValue, eff Effect) error {
+func applyReplace(statBlock map[string]any, rv ResolvedValue, eff Effect) error {
+	// Replacing one number with another must sync sibling/ancestor text the
+	// same way adjustments do — a walk speed's display name is "25 feet",
+	// and replacing only the value leaves the rendered text stale (Dwarf's
+	// "Change Speed to 20 feet if higher" showed a highlighted "25 feet").
+	oldVal, oldOK := toFloat64(rv.Get())
+	newVal, newOK := toFloat64(eff.Value)
 	rv.Set(eff.Value)
+	if oldOK && newOK {
+		updateSiblingText(statBlock, eff.Target, rv, oldVal, newVal)
+	}
 	return nil
 }
 
