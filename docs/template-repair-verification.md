@@ -41,8 +41,19 @@ All four gaps are structurally closed (scratchpad `clausev` / `clausev2`):
 
 ## Final results
 
-**98 sweep documents · 1,337 clauses · 13,216 checks · 0 failures.** Each clause tested
-against ≥10 qualifying same-edition creatures; shortfalls documented, never padded.
+**99 sweep documents · 1,338 clauses · 13,226 checks · 0 failures.**
+
+Coverage reconciliation against the 100 rules-carrying documents in the audit artifact:
+Wardens of the Wild (ability-only family, engine synthesis) was initially missed by the
+inventory builder's no-changes skip — now included and green (10/10); npc_core/military
+is a triaged duplicate of the Guerrilla template (documented exclusion in the builder).
+Two skeleton documents carry their rules in sections/pool and have zero assertable
+clauses; both render OK.
+
+Clauses were tested against up to 10 qualifying same-edition creatures each; 18 of
+1,338 matched fewer than 10, and 4 had empty candidate pools (Ravener c2/e5
+monster_core_2, Werecreature c3/e5 monster_core, Sporeborn c0/e5 and c0/e6) — pool
+sizes are recorded in the sweep JSON, never padded.
 
 Annotated (non-silent) exceptions baked into the harness:
 
