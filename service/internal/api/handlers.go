@@ -510,7 +510,7 @@ func (h *handler) applyTemplateInline(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		if entry == nil {
-			return nil, fmt.Errorf("no entry for game_id %q", gameID)
+			return nil, fmt.Errorf("%w: no entry for game_id %q", template.ErrSpellNotFound, gameID)
 		}
 		raw, err := h.cfg.S3Client.GetObjectBytes(r.Context(), entry.S3Key)
 		if err != nil {
