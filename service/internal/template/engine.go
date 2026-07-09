@@ -1717,6 +1717,9 @@ type SelectionChoice struct {
 	OptionIndices []int       `json:"option_indices,omitempty"`
 	Effects       []Effect    `json:"effects,omitempty"`
 	SpellSwaps    []SpellSwap `json:"spell_swaps,omitempty"`
+	// Skill answers a choose_skill selection (Corrupt's official bully):
+	// the engine templates it into the granted ability's text and name.
+	Skill string `json:"skill,omitempty"`
 }
 
 // applySelections applies the chosen options for each answered selection,
@@ -1736,6 +1739,42 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 			return nil, nil, fmt.Errorf("%w: selection %q does not exist on this template", ErrBadSelection, choice.ID)
 		}
 		effects := append([]Effect{}, choice.Effects...)
+		choicePool := pool
+		if choice.Skill != "" {
+			action, _ := ref.eff.Selection["action"].(string)
+			if action != "choose_skill" {
+				return nil, nil, fmt.Errorf("%w: selection %q does not take a skill", ErrBadSelection, choice.ID)
+			}
+			if !skillNameRe.MatchString(choice.Skill) {
+				return nil, nil, fmt.Errorf("%w: invalid skill name %q", ErrBadSelection, choice.Skill)
+			}
+			var renames map[string]string
+			choicePool, renames = poolWithSkillTemplated(pool, choice.Skill)
+			// A skill answer implies the selection's sole option when the
+			// client sent no explicit option indices.
+			if len(choice.OptionIndices) == 0 && len(effects) == 0 {
+				opts, _ := ref.eff.Selection["options"].([]any)
+				if len(opts) == 0 {
+					return nil, nil, fmt.Errorf("%w: selection %q has no options to apply", ErrBadSelection, choice.ID)
+				}
+				parsed, err := effectsFromOption(opts[0], ref.eff.Target)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%w: selection %q: %v", ErrBadSelection, choice.ID, err)
+				}
+				effects = append(effects, parsed...)
+			}
+			// The templated ability was renamed — keep name-filtered
+			// add_items sources matching it.
+			for i := range effects {
+				if effects[i].Source == "" {
+					continue
+				}
+				for oldName, newName := range renames {
+					effects[i].Source = strings.ReplaceAll(effects[i].Source,
+						"=='"+escapeFilterName(oldName)+"'", "=='"+escapeFilterName(newName)+"'")
+				}
+			}
+		}
 		if len(choice.SpellSwaps) > 0 {
 			swapEffs, err := spellSwapEffects(statBlock, ref, choice.SpellSwaps, resolver)
 			if err != nil {
@@ -1782,7 +1821,7 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 				Text:           ref.change.Text,
 				Effects:        []Effect{eff},
 			}
-			if err := applyChange(statBlock, selChange, pool, sections); err != nil {
+			if err := applyChange(statBlock, selChange, choicePool, sections); err != nil {
 				return nil, nil, fmt.Errorf("apply selection %q: %w", choice.ID, err)
 			}
 		}
