@@ -1064,6 +1064,35 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 		addName = eff.Name
 	}
 
+	// Movement entries match by movement_type, not name — the name embeds
+	// the value ("swim 30 feet" vs "swim 25 feet"), so name dedup misses.
+	// Published "add a X Speed" semantics keep the faster of the two: bump
+	// an existing slower speed, leave an equal-or-faster one alone. Never
+	// append a second entry for the same movement type.
+	if m := eff.ItemMap(); m != nil {
+		if mt, _ := m["movement_type"].(string); mt != "" {
+			for _, el := range arr {
+				em, ok := el.(map[string]any)
+				if !ok {
+					continue
+				}
+				emt, _ := em["movement_type"].(string)
+				if !strings.EqualFold(emt, mt) {
+					continue
+				}
+				newVal, hasNew := toFloat64(m["value"])
+				oldVal, hasOld := toFloat64(em["value"])
+				if hasNew && (!hasOld || newVal > oldVal) {
+					em["value"] = m["value"]
+					if n, ok := m["name"].(string); ok {
+						em["name"] = n
+					}
+				}
+				return nil
+			}
+		}
+	}
+
 	// An item with this name already exists (case-insensitive): for
 	// value-bearing items (skills), published "add X with a modifier equal
 	// to Y" semantics RAISE an existing lower value and keep a higher one
