@@ -30,6 +30,12 @@ func Apply(creature map[string]any, tmpl TemplateJSON) (*ApplyResult, error) {
 // selects like the Air spell swap, where the engine cannot fabricate the
 // replacement spell). Applied selections are echoed in the patch document.
 func ApplyWithSelections(creature map[string]any, tmpl TemplateJSON, chosen []SelectionChoice) (*ApplyResult, error) {
+	return ApplyWithSelectionsResolver(creature, tmpl, chosen, nil)
+}
+
+// ApplyWithSelectionsResolver is ApplyWithSelections with a SpellResolver
+// for choices that carry spell_swaps (server-side swap construction).
+func ApplyWithSelectionsResolver(creature map[string]any, tmpl TemplateJSON, chosen []SelectionChoice, resolver SpellResolver) (*ApplyResult, error) {
 	working := deepCopy(creature).(map[string]any)
 
 	statBlock, ok := working["stat_block"].(map[string]any)
@@ -110,7 +116,7 @@ func ApplyWithSelections(creature map[string]any, tmpl TemplateJSON, chosen []Se
 	// template document. Clients storing selections long-term (deep links)
 	// should pin template_version; a data regen that reorders changes
 	// re-points ids.
-	applied, appliedIDs, err := applySelections(working, statBlock, chosen, byID, pool, tmpl.Sections)
+	applied, appliedIDs, err := applySelections(working, statBlock, chosen, byID, pool, tmpl.Sections, resolver)
 	if err != nil {
 		return nil, err
 	}
@@ -1673,15 +1679,16 @@ type selectRef struct {
 
 // SelectionChoice is one answered selection from the apply request.
 type SelectionChoice struct {
-	ID            string   `json:"id"`
-	OptionIndices []int    `json:"option_indices,omitempty"`
-	Effects       []Effect `json:"effects,omitempty"`
+	ID            string      `json:"id"`
+	OptionIndices []int       `json:"option_indices,omitempty"`
+	Effects       []Effect    `json:"effects,omitempty"`
+	SpellSwaps    []SpellSwap `json:"spell_swaps,omitempty"`
 }
 
 // applySelections applies the chosen options for each answered selection,
 // producing one patch group per selection (attributed to the selection's
 // change text so the display can highlight and name it).
-func applySelections(working, statBlock map[string]any, chosen []SelectionChoice, byID map[string]selectRef, pool []any, sections []any) ([]PatchGroup, []string, error) {
+func applySelections(working, statBlock map[string]any, chosen []SelectionChoice, byID map[string]selectRef, pool []any, sections []any, resolver SpellResolver) ([]PatchGroup, []string, error) {
 	var groups []PatchGroup
 	var appliedIDs []string
 	seen := map[string]bool{}
@@ -1695,6 +1702,13 @@ func applySelections(working, statBlock map[string]any, chosen []SelectionChoice
 			return nil, nil, fmt.Errorf("%w: selection %q does not exist on this template", ErrBadSelection, choice.ID)
 		}
 		effects := append([]Effect{}, choice.Effects...)
+		if len(choice.SpellSwaps) > 0 {
+			swapEffs, err := spellSwapEffects(statBlock, ref, choice.SpellSwaps, resolver)
+			if err != nil {
+				return nil, nil, fmt.Errorf("selection %q: %w", choice.ID, err)
+			}
+			effects = append(effects, swapEffs...)
+		}
 		if len(choice.OptionIndices) > 0 {
 			opts, _ := ref.eff.Selection["options"].([]any)
 			if maxOpts, ok := selectionMax(ref.eff.Selection); ok && len(choice.OptionIndices) > maxOpts {

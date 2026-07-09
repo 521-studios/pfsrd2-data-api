@@ -353,12 +353,31 @@ func matchesFilter(elem any, filter string) bool {
 // extractFilterValue extracts the value from a filter expression like " 'walk'" or " 20".
 func extractFilterValue(s string) string {
 	s = strings.TrimSpace(s)
-	// String literal: 'value' or "value"
+	// String literal: 'value' or "value" — backslash escapes inside the
+	// literal ("heroes\' feast") unescape to the raw name for comparison.
 	if (strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'")) ||
 		(strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"")) {
-		return s[1 : len(s)-1]
+		return unescapeFilterString(s[1 : len(s)-1])
 	}
 	return s
+}
+
+// unescapeFilterString removes backslash escapes from a filter string
+// literal: \' → ', \\ → \.
+func unescapeFilterString(v string) string {
+	if !strings.Contains(v, "\\") {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\\' && i+1 < len(v) {
+			b.WriteByte(v[i+1])
+			i++
+			continue
+		}
+		b.WriteByte(v[i])
+	}
+	return b.String()
 }
 
 // resolveFilterField resolves a dotted field path from an element.
