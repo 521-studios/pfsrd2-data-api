@@ -251,6 +251,28 @@ func consumedFromChanges(changes []Change) (names map[string]bool, all, senses b
 	names = map[string]bool{}
 	for _, c := range changes {
 		for _, eff := range c.Effects {
+			// add_items nested in selection options consume abilities too
+			// (choose_skill's Official Bully) — without counting them every
+			// apply logs a spurious unconsumed-ability warning.
+			if eff.Operation == "select" && eff.Selection != nil {
+				opts, _ := eff.Selection["options"].([]any)
+				for _, opt := range opts {
+					om, _ := opt.(map[string]any)
+					effList, _ := om["effects"].([]any)
+					for _, oe := range effList {
+						oeMap, _ := oe.(map[string]any)
+						if oeMap["operation"] != "add_items" {
+							continue
+						}
+						if src, _ := oeMap["source"].(string); src != "" {
+							if m := sourceNameFilter.FindStringSubmatch(src); m != nil {
+								names[strings.ToLower(unescapeFilterString(m[1]))] = true
+							}
+						}
+					}
+				}
+				continue
+			}
 			if eff.Operation != "add_items" {
 				continue
 			}
