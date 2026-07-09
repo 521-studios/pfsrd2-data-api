@@ -1,31 +1,18 @@
 package template
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func speedEntry(mt string, feet float64) map[string]any {
 	return map[string]any{
 		"movement_type": mt,
-		"name":          speedName(mt, feet),
+		"name":          mt + " " + strconv.Itoa(int(feet)) + " feet",
 		"subtype":       "speed",
 		"type":          "stat_block_section",
 		"value":         feet,
 	}
-}
-
-func speedName(mt string, feet float64) string {
-	return mt + " " + itoa(int(feet)) + " feet"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	return digits
 }
 
 func applySpeedAdd(t *testing.T, existing []any, item map[string]any) []any {

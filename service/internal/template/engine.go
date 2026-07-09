@@ -1086,6 +1086,8 @@ func applyAddItem(rv ResolvedValue, eff Effect) error {
 					em["value"] = m["value"]
 					if n, ok := m["name"].(string); ok {
 						em["name"] = n
+					} else {
+						setMovementName(em, m["value"])
 					}
 				}
 				return nil
