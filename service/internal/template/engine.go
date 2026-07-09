@@ -527,7 +527,7 @@ func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) erro
 	case "remove_all_except":
 		return applyRemoveAllExcept(rv, eff)
 	case "size_increment":
-		return nil // stub — not yet implemented
+		return applySizeIncrement(statBlock, rv, eff)
 	case "select":
 		return nil
 	case "no_op":
@@ -535,6 +535,67 @@ func applyOperation(statBlock map[string]any, rv ResolvedValue, eff Effect) erro
 	default:
 		return fmt.Errorf("unsupported operation: %s", eff.Operation)
 	}
+}
+
+// sizeLadder orders the PF2 size categories for size_increment stepping.
+var sizeLadder = []string{"Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"}
+
+// applySizeIncrement steps the creature's size along the size ladder by
+// eff.Value steps, clamped to the ladder ends. The size string also appears
+// as a trait badge on creature_type.traits, so the matching badge is renamed
+// to keep the rendered trait row consistent.
+func applySizeIncrement(statBlock map[string]any, rv ResolvedValue, eff Effect) error {
+	steps, ok := toFloat64(eff.Value)
+	if !ok {
+		return fmt.Errorf("size_increment value is not numeric: %v", eff.Value)
+	}
+	if steps != math.Trunc(steps) {
+		return fmt.Errorf("size_increment value is not a whole number: %v", eff.Value)
+	}
+	cur, ok := rv.Get().(string)
+	if !ok {
+		return fmt.Errorf("size_increment target is not a string: %T", rv.Get())
+	}
+	idx := -1
+	for i, s := range sizeLadder {
+		if strings.EqualFold(s, cur) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("size_increment: unknown size %q", cur)
+	}
+	next := idx + int(steps)
+	if next < 0 {
+		next = 0
+	}
+	if next > len(sizeLadder)-1 {
+		next = len(sizeLadder) - 1
+	}
+	newSize := sizeLadder[next]
+	if newSize == cur {
+		return nil
+	}
+	rv.Set(newSize)
+	ct, ok := statBlock["creature_type"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	traits, ok := ct["traits"].([]any)
+	if !ok {
+		return nil
+	}
+	for _, tr := range traits {
+		m, ok := tr.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := m["name"].(string); strings.EqualFold(name, cur) {
+			m["name"] = newSize
+		}
+	}
+	return nil
 }
 
 // applyAdjustment adds a numeric value to the resolved target.
