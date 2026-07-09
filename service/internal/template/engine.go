@@ -461,10 +461,16 @@ func applySingleEffect(statBlock map[string]any, eff Effect, arrayIdx int) error
 	if eff.ValueFrom != "" {
 		computed, err := evaluateValueFrom(statBlock, eff.ValueFrom, eff.Minimum)
 		if errors.Is(err, ErrValueFromPath) {
-			// Non-fatal: creature lacks the field (e.g., no walk speed for
-			// swim-only creatures)
-			slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
-			return nil
+			// The creature lacks the source field entirely. A published
+			// "minimum N feet" clause floors the result, so the grant still
+			// lands at the minimum (Amphibious on a fly-only creature adds
+			// swim 15 and land 15). Without a minimum there is nothing to
+			// grant — skip as before.
+			if eff.Minimum == nil {
+				slog.Debug("value_from resolution skipped", "expr", eff.ValueFrom, "err", err)
+				return nil
+			}
+			computed, err = *eff.Minimum, nil
 		}
 		if errors.Is(err, ErrValueFromShape) {
 			// Template/schema mismatch: skip the effect but say so loudly —

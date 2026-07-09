@@ -42,6 +42,15 @@ var status DBStatus
 func InitDB(ctx context.Context, cfg Config) error {
 	s3Etag, err := cfg.S3Client.HeadObject(ctx, s3.DBKey)
 	if err != nil {
+		// Credentials/network failure at startup must not take the server
+		// down when a previously downloaded DB exists (expired SSO in local
+		// dev crash-looped the container). Serve stale and let the watcher
+		// refresh once S3 is reachable again.
+		if _, statErr := os.Stat(dbPath); statErr == nil {
+			log.Printf("[startup] head db failed (%v), using stale local DB", err)
+			status.LocalEtag = readEtag()
+			return openAndSet()
+		}
 		return fmt.Errorf("head db: %w", err)
 	}
 
