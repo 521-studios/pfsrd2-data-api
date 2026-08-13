@@ -769,13 +769,25 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	hasTrailingSpace := len(p.Q) > len(trimmed)
 	words := strings.Fields(trimmed)
 
-	if len(words) == 0 {
+	// Filter-only browse: with no query text but an active trait/category/
+	// subcategory filter, list the matching entries (name order) so a picker can
+	// populate without typing. Empty query AND no filter → nothing (don't dump
+	// the whole catalog just because a type was passed).
+	hasFilters := p.Traits != "" || p.Category != "" || p.Subcategory != ""
+	if len(words) == 0 && !hasFilters {
 		return []UnifiedSuggestion{}, nil
 	}
 
-	conds, args := buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
+	var conds []string
+	var args []any
+	if len(words) > 0 {
+		conds, args = buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
+	}
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	if len(conds) == 0 {
+		conds = []string{"1=1"}
+	}
 	where := strings.Join(conds, " AND ")
 
 	query := fmt.Sprintf(`

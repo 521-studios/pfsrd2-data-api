@@ -1773,3 +1773,41 @@ func TestSuggestTraitsHandler_FacetParam(t *testing.T) {
 		t.Errorf("want [Evocation Magical], got %v", traits)
 	}
 }
+
+// Filter-only browse through the handler: no q + a category filter lists matches;
+// no q + no filter stays empty.
+func TestSuggestUnifiedHandler_FilterOnly(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search/suggest/unified?type=equipment&category=Runes", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var results []db.UnifiedSuggestion
+	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	names := make([]string, len(results))
+	for i, s := range results {
+		names[i] = s.Name
+	}
+	if !slices.Equal(names, []string{"Frost", "Striking"}) {
+		t.Errorf("want [Frost Striking], got %v", names)
+	}
+
+	// No q + no filter → empty (short-circuits before the DB).
+	req2 := httptest.NewRequest("GET", "/api/pfsrd2/search/suggest/unified?type=equipment", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	var empty []db.UnifiedSuggestion
+	if err := json.Unmarshal(w2.Body.Bytes(), &empty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("want [] for no q + no filter, got %v", empty)
+	}
+}

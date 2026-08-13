@@ -1269,3 +1269,36 @@ func TestSuggestTraits_FacetNarrows(t *testing.T) {
 		t.Errorf("want [Evocation Magical] under Fundamental Weapon Runes, got %v", bySub)
 	}
 }
+
+func TestSuggestUnified_FilterOnly(t *testing.T) {
+	db := testDB(t)
+	// Empty query + a category filter lists the matching entries in name order,
+	// so a picker populates without typing.
+	byCat, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}, Category: "Runes"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	names := make([]string, len(byCat))
+	for i, s := range byCat {
+		names[i] = s.Name
+	}
+	if !slices.Equal(names, []string{"Frost", "Striking"}) {
+		t.Errorf("want [Frost Striking] for empty q + Category=Runes, got %v", names)
+	}
+	// Empty query + a trait filter narrows to the co-matching entry.
+	byTrait, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}, Traits: "Cold"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(byTrait) != 1 || byTrait[0].Name != "Frost" {
+		t.Errorf("want [Frost] for empty q + Traits=Cold, got %v", byTrait)
+	}
+	// Empty query + NO filter → nothing (don't dump the catalog on type alone).
+	none, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for empty q + no filter, got %v", none)
+	}
+}
