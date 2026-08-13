@@ -1259,7 +1259,8 @@ func TestSuggestTraits_FacetNarrows(t *testing.T) {
 		t.Errorf("want [Healing Magical] under Consumables, got %v", byCat)
 	}
 	// Subcategory narrows further: Fundamental Weapon Runes → only Striking, so
-	// Cold (Frost, a Property Rune) drops out of the base [Cold Evocation Magical].
+	// from the full equipment base [Cold Evocation Healing Magical], Cold (Frost,
+	// a Property Rune) and Healing (a Consumable) both drop.
 	bySub, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Subcategory: "Fundamental Weapon Runes"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
