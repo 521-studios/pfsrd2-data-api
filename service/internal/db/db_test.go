@@ -3,23 +3,12 @@ package db
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
 
 // testDB creates an in-memory SQLite database with schema and fixture data.
 // Returns the db and a cleanup function.
@@ -1048,7 +1037,7 @@ func TestFacets_CategoriesAndSubcategories(t *testing.T) {
 		t.Fatalf("expected %d categories, got %d (%v)", len(want), len(facets), facets)
 	}
 	for cat, subs := range want {
-		if !equalStrings(facets[cat], subs) {
+		if !slices.Equal(facets[cat], subs) {
 			t.Errorf("category %q: want %v, got %v", cat, subs, facets[cat])
 		}
 	}
@@ -1060,7 +1049,7 @@ func TestFacets_TypeFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(facets) != 1 || !equalStrings(facets["Armor"], []string{"Base Armor"}) {
+	if len(facets) != 1 || !slices.Equal(facets["Armor"], []string{"Base Armor"}) {
 		t.Errorf("expected only Armor->[Base Armor], got %v", facets)
 	}
 }
@@ -1079,12 +1068,12 @@ func TestFacets_ExcludesCreatures(t *testing.T) {
 
 func TestSuggestTraits_Base(t *testing.T) {
 	db := testDB(t)
-	traits, err := SuggestTraits(context.Background(), db, []string{"equipment"}, nil, "", 0)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Distinct traits across the 3 equipment items (armor "Comfort" excluded), sorted.
-	if !equalStrings(traits, []string{"Cold", "Evocation", "Healing", "Magical"}) {
+	if !slices.Equal(traits, []string{"Cold", "Evocation", "Healing", "Magical"}) {
 		t.Errorf("unexpected traits: %v", traits)
 	}
 }
@@ -1092,11 +1081,11 @@ func TestSuggestTraits_Base(t *testing.T) {
 func TestSuggestTraits_CoOccurrence(t *testing.T) {
 	db := testDB(t)
 	// Only Frost carries Cold → co-occurring traits are Evocation, Magical.
-	traits, err := SuggestTraits(context.Background(), db, []string{"equipment"}, []string{"Cold"}, "", 0)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Selected: []string{"Cold"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !equalStrings(traits, []string{"Evocation", "Magical"}) {
+	if !slices.Equal(traits, []string{"Evocation", "Magical"}) {
 		t.Errorf("want [Evocation Magical], got %v", traits)
 	}
 }
@@ -1104,7 +1093,7 @@ func TestSuggestTraits_CoOccurrence(t *testing.T) {
 func TestSuggestTraits_ExcludesSelectedCaseInsensitive(t *testing.T) {
 	db := testDB(t)
 	// Lowercase "magical" must match + be excluded from the output.
-	traits, err := SuggestTraits(context.Background(), db, []string{"equipment"}, []string{"magical"}, "", 0)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Selected: []string{"magical"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1113,18 +1102,18 @@ func TestSuggestTraits_ExcludesSelectedCaseInsensitive(t *testing.T) {
 			t.Fatalf("selected trait must be excluded, got %v", traits)
 		}
 	}
-	if !equalStrings(traits, []string{"Cold", "Evocation", "Healing"}) {
+	if !slices.Equal(traits, []string{"Cold", "Evocation", "Healing"}) {
 		t.Errorf("unexpected traits: %v", traits)
 	}
 }
 
 func TestSuggestTraits_Prefix(t *testing.T) {
 	db := testDB(t)
-	traits, err := SuggestTraits(context.Background(), db, []string{"equipment"}, nil, "ev", 0)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Q: "ev"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !equalStrings(traits, []string{"Evocation"}) {
+	if !slices.Equal(traits, []string{"Evocation"}) {
 		t.Errorf("want [Evocation], got %v", traits)
 	}
 }
@@ -1166,5 +1155,81 @@ func TestSearch_CategorySubcategoryFilter(t *testing.T) {
 	}
 	if res.Total != 1 || len(res.Results) != 1 || res.Results[0].Name != "Frost" {
 		t.Errorf("want [Frost], got total=%d %v", res.Total, res.Results)
+	}
+}
+
+func TestSuggestTraits_LimitCap(t *testing.T) {
+	db := testDB(t)
+	// >50 is clamped to 50; we don't have 50 traits, but the clamp must not error
+	// and must not exceed 50. Assert it's bounded.
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Limit: 100})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(traits) > 50 {
+		t.Errorf("limit should cap at 50, got %d", len(traits))
+	}
+}
+
+func TestFacets_CategoryWithoutSubcategory(t *testing.T) {
+	db := testDB(t)
+	// An item with item_category set but no item_subcategory must still list,
+	// with an empty subcategory slice.
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Equipment:910','equipment','Bag of Holding','1.0','equipment/gear/bag.json','json/equipment/1.0/gear/bag.json','Player Core','remastered','{"item_category":"Adventuring Gear"}','Bag of Holding')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	facets, err := Facets(context.Background(), db, []string{"equipment"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	subs, ok := facets["Adventuring Gear"]
+	if !ok {
+		t.Fatalf("expected 'Adventuring Gear' category to list, got %v", facets)
+	}
+	if len(subs) != 0 {
+		t.Errorf("expected empty subcategory slice, got %v", subs)
+	}
+}
+
+func TestSuggest_ShortQueryWithFilter(t *testing.T) {
+	db := testDB(t)
+	// The <3-char path uses exact name match (no trigram) — insert a short-named
+	// item so we can drive it with a filter. Exact match needs no FTS rebuild.
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Equipment:920','equipment','Xy','1.0','equipment/rune/xy.json','json/equipment/1.0/rune/xy.json','Player Core','remastered','{"traits":["Magical"],"item_category":"Runes","item_subcategory":"Property Runes"}','Xy')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := Suggest(context.Background(), db, SuggestParams{Q: "Xy", Category: "Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Xy" {
+		t.Errorf("want [Xy] for short query + Category=Runes, got %v", got)
+	}
+	none, err := Suggest(context.Background(), db, SuggestParams{Q: "Xy", Category: "Armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for Xy filtered to Armor, got %v", none)
+	}
+}
+
+func TestSuggestUnified_AttrFilter(t *testing.T) {
+	db := testDB(t)
+	got, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "frost", Category: "Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Frost" {
+		t.Errorf("want [Frost], got %v", got)
+	}
+	none, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "frost", Category: "Armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for Frost filtered to Armor, got %v", none)
 	}
 }

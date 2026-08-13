@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/521studios/pfsrd2-data-api/internal/db"
@@ -1634,5 +1635,117 @@ func TestSearchEndpointHonorsApplicableTo(t *testing.T) {
 		if e.GameID == "botd-vampire-tmpl" {
 			t.Fatal("search endpoint ignored applicable_to: paired legacy template listed for remastered")
 		}
+	}
+}
+
+// seedItems adds a few item entries (with item_category/subcategory + traits in
+// attrs) to the global test DB so the facets/traits/category handlers have data.
+// Exact-match + json_each paths need no FTS rebuild.
+func seedItems(t *testing.T) {
+	t.Helper()
+	d := db.Global()
+	rows := []struct{ gameID, typ, name, attrs string }{
+		{"Equipment:900", "equipment", "Striking", `{"traits":["Evocation","Magical"],"item_category":"Runes","item_subcategory":"Fundamental Weapon Runes"}`},
+		{"Equipment:901", "equipment", "Frost", `{"traits":["Cold","Evocation","Magical"],"item_category":"Runes","item_subcategory":"Property Runes"}`},
+		{"Armor:903", "armor", "Leather Armor", `{"traits":["Comfort"],"item_category":"Armor","item_subcategory":"Base Armor"}`},
+	}
+	for _, r := range rows {
+		if _, err := d.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+			VALUES(?,?,?,'1.0','x/y.json','json/x/1.0/y.json','Player Core','remastered',?,?)`,
+			r.gameID, r.typ, r.name, r.attrs, r.name); err != nil {
+			t.Fatalf("seed item %s: %v", r.gameID, err)
+		}
+	}
+}
+
+func TestFacetsHandler(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search/facets?type=equipment&type=armor", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Categories map[string][]string `json:"categories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := body.Categories["Runes"]; len(got) != 2 {
+		t.Errorf("expected 2 Runes subcategories, got %v", got)
+	}
+	if _, ok := body.Categories["Armor"]; !ok {
+		t.Errorf("expected Armor category, got %v", body.Categories)
+	}
+}
+
+func TestSuggestTraitsHandler(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search/traits?q=ev&type=equipment", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var traits []string
+	if err := json.Unmarshal(w.Body.Bytes(), &traits); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !slices.Equal(traits, []string{"Evocation"}) {
+		t.Errorf("want [Evocation], got %v", traits)
+	}
+}
+
+// Exercises the repeatable ?trait= parsing + co-occurrence narrowing through the
+// handler: only Frost carries Cold, so co-occurring traits are Evocation, Magical.
+func TestSuggestTraitsHandler_SelectedNarrows(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search/traits?type=equipment&trait=Cold", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var traits []string
+	if err := json.Unmarshal(w.Body.Bytes(), &traits); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !slices.Equal(traits, []string{"Evocation", "Magical"}) {
+		t.Errorf("want [Evocation Magical], got %v", traits)
+	}
+}
+
+// Verifies the category/subcategory query params reach db.Search end-to-end.
+func TestSearchHandler_CategoryParam(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search?category=Runes&subcategory=Property%20Runes", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var res db.SearchResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.Total != 1 || len(res.Results) != 1 || res.Results[0].Name != "Frost" {
+		t.Errorf("want [Frost], got total=%d %v", res.Total, res.Results)
 	}
 }

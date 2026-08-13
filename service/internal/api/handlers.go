@@ -216,11 +216,12 @@ func (h *handler) facets(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (h *handler) suggestTraits(w http.ResponseWriter, r *http.Request) {
-	traits, err := db.SuggestTraits(
-		r.Context(), db.Global(),
-		r.URL.Query()["type"], r.URL.Query()["trait"],
-		r.URL.Query().Get("q"), queryInt(r, "limit", 50),
-	)
+	traits, err := db.SuggestTraits(r.Context(), db.Global(), db.TraitSuggestParams{
+		Q:        r.URL.Query().Get("q"),
+		Types:    r.URL.Query()["type"],
+		Selected: r.URL.Query()["trait"],
+		Limit:    queryInt(r, "limit", 50),
+	})
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return

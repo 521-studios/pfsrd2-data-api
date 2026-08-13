@@ -436,18 +436,19 @@ func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 // Facets (category/subcategory + trait typeahead)
 // ---------------------------------------------------------------------------
 
-// typeInClause builds an `e.type IN (?,?)` fragment (empty string if no types)
-// and appends the type values to args.
-func typeInClause(types []string, args []any) (string, []any) {
+// addTypeFilter appends an `e.type IN (...)` condition for the given content
+// types (nothing when types is empty). Entries must be aliased `e`. Shared by
+// addTypeVersionFilters, Facets, and SuggestTraits.
+func addTypeFilter(conds []string, args []any, types []string) ([]string, []any) {
 	if len(types) == 0 {
-		return "", args
+		return conds, args
 	}
 	ph := make([]string, len(types))
 	for i, t := range types {
 		ph[i] = "?"
 		args = append(args, t)
 	}
-	return "e.type IN (" + strings.Join(ph, ",") + ")", args
+	return append(conds, "e.type IN ("+strings.Join(ph, ",")+")"), args
 }
 
 // Facets returns the distinct item categories present in the index (optionally
@@ -456,10 +457,7 @@ func typeInClause(types []string, args []any) (string, []any) {
 func Facets(ctx context.Context, db *sql.DB, types []string) (map[string][]string, error) {
 	conds := []string{"json_extract(e.attrs,'$.item_category') IS NOT NULL"}
 	args := []any{}
-	if clause, a := typeInClause(types, args); clause != "" {
-		conds = append(conds, clause)
-		args = a
-	}
+	conds, args = addTypeFilter(conds, args, types)
 	query := fmt.Sprintf(`
 		SELECT DISTINCT json_extract(e.attrs,'$.item_category')    AS cat,
 		                json_extract(e.attrs,'$.item_subcategory') AS subcat
@@ -491,24 +489,30 @@ func Facets(ctx context.Context, db *sql.DB, types []string) (map[string][]strin
 	return facets, rows.Err()
 }
 
+// TraitSuggestParams for GET /search/traits.
+type TraitSuggestParams struct {
+	Q        string   // trait-name prefix
+	Types    []string // content types to search within
+	Selected []string // already-chosen trait chips (results co-occur with all)
+	Limit    int      // hard cap at 50
+}
+
 // SuggestTraits returns distinct trait names for the trait-chip typeahead. Results
-// are co-occurrence–filtered: only traits carried by entries that match the given
-// types AND already carry every trait in `selected` (so a suggestion always narrows
-// further). `q` prefix-filters the trait name; `selected` traits are excluded from
+// are co-occurrence–filtered: only traits carried by entries that match p.Types
+// AND already carry every trait in p.Selected (so a suggestion always narrows
+// further). p.Q prefix-filters the trait name; p.Selected traits are excluded from
 // the output. Case-insensitive throughout. Limit hard-capped at 50.
-func SuggestTraits(ctx context.Context, db *sql.DB, types, selected []string, q string, limit int) ([]string, error) {
+func SuggestTraits(ctx context.Context, db *sql.DB, p TraitSuggestParams) ([]string, error) {
+	limit := p.Limit
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
 	conds := []string{"1=1"}
 	args := []any{}
 
-	if clause, a := typeInClause(types, args); clause != "" {
-		conds = append(conds, clause)
-		args = a
-	}
+	conds, args = addTypeFilter(conds, args, p.Types)
 	// each already-selected trait must be present on the entry (AND)
-	for _, s := range selected {
+	for _, s := range p.Selected {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			continue
@@ -520,7 +524,7 @@ func SuggestTraits(ctx context.Context, db *sql.DB, types, selected []string, q 
 		conds = append(conds, "LOWER(je.value) <> LOWER(?)")
 		args = append(args, s)
 	}
-	if q = strings.TrimSpace(q); q != "" {
+	if q := strings.TrimSpace(p.Q); q != "" {
 		conds = append(conds, "LOWER(je.value) LIKE ?")
 		args = append(args, strings.ToLower(q)+"%")
 	}
@@ -658,14 +662,7 @@ func buildWordMatchConds(words []string, hasTrailingSpace bool) (conds []string,
 
 // addTypeVersionFilters appends type and version filter conditions.
 func addTypeVersionFilters(conds []string, args []any, types []string, version string) ([]string, []any) {
-	if len(types) > 0 {
-		placeholders := make([]string, len(types))
-		for i, t := range types {
-			placeholders[i] = "?"
-			args = append(args, t)
-		}
-		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
-	}
+	conds, args = addTypeFilter(conds, args, types)
 	if version != "" {
 		conds = append(conds,
 			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
