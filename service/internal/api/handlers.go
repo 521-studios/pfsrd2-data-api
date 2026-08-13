@@ -174,7 +174,12 @@ func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	if len(q) == 0 {
+	traits := r.URL.Query().Get("traits")
+	category := r.URL.Query().Get("category")
+	subcategory := r.URL.Query().Get("subcategory")
+	// Empty query with no filter → nothing. A trait/category/subcategory filter
+	// makes it a filter-only browse (the picker lists matches without typing).
+	if len(q) == 0 && traits == "" && category == "" && subcategory == "" {
 		jsonOK(w, []db.UnifiedSuggestion{})
 		return
 	}
@@ -182,9 +187,9 @@ func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 		Q:           q,
 		Types:       r.URL.Query()["type"],
 		Version:     r.URL.Query().Get("version"),
-		Traits:      r.URL.Query().Get("traits"),
-		Category:    r.URL.Query().Get("category"),
-		Subcategory: r.URL.Query().Get("subcategory"),
+		Traits:      traits,
+		Category:    category,
+		Subcategory: subcategory,
 		Limit:       queryInt(r, "limit", 15),
 	}
 	results, err := db.SuggestUnified(r.Context(), db.Global(), p)
