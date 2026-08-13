@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -156,6 +157,22 @@ func addAttrFilters(conds []string, args []any, traits, category, subcategory st
 	if subcategory != "" {
 		conds = append(conds, "json_extract(e.attrs,'$.item_subcategory') = ?")
 		args = append(args, subcategory)
+	}
+	return conds, args
+}
+
+// addLevelRangeFilter appends inclusive level bounds from min/max strings. Each is
+// parsed as an int (negatives are fine — creatures reach -1) and skipped when
+// blank or non-numeric. A level-less entry (NULL) fails either comparison, so a
+// level filter excludes it. Entries are aliased `e`.
+func addLevelRangeFilter(conds []string, args []any, levelMin, levelMax string) ([]string, []any) {
+	if n, err := strconv.Atoi(strings.TrimSpace(levelMin)); err == nil {
+		conds = append(conds, "e.level >= ?")
+		args = append(args, n)
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(levelMax)); err == nil {
+		conds = append(conds, "e.level <= ?")
+		args = append(args, n)
 	}
 	return conds, args
 }
@@ -580,6 +597,8 @@ type SuggestParams struct {
 	Traits      string   // comma-separated (AND)
 	Category    string   // item_category exact
 	Subcategory string   // item_subcategory exact
+	LevelMin    string   // inclusive lower level bound
+	LevelMax    string   // inclusive upper level bound
 	Limit       int      // hard cap at 15
 }
 
@@ -610,6 +629,7 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 	}
 
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
 
 	where := strings.Join(conds, " AND ")
 	sqlQuery := fmt.Sprintf(`
@@ -702,6 +722,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	conds, args := buildWordMatchConds(words, hasTrailingSpace)
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
 	where := strings.Join(conds, " AND ")
 
 	query := fmt.Sprintf(`
@@ -754,6 +775,8 @@ type UnifiedSuggestParams struct {
 	Traits      string // comma-separated (AND)
 	Category    string // item_category exact
 	Subcategory string // item_subcategory exact
+	LevelMin    string // inclusive lower level bound
+	LevelMax    string // inclusive upper level bound
 	Limit       int
 }
 
@@ -778,15 +801,16 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 		conds, args = buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
 	}
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
-	beforeAttr := len(conds)
+	beforeFilters := len(conds)
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
-	hasAttrFilter := len(conds) > beforeAttr
+	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
+	hasFilter := len(conds) > beforeFilters
 
-	// Nothing to match on: no query words AND no real attribute filter → return
-	// nothing (a bare type must not dump the catalog; a degenerate filter such as
-	// traits="," produces no condition and is caught here, not just by the raw
-	// string being non-empty).
-	if len(words) == 0 && !hasAttrFilter {
+	// Nothing to match on: no query words AND no real filter (attribute or level)
+	// → return nothing (a bare type must not dump the catalog; a degenerate filter
+	// such as traits="," produces no condition and is caught here, not just by the
+	// raw string being non-empty).
+	if len(words) == 0 && !hasFilter {
 		return []UnifiedSuggestion{}, nil
 	}
 	if len(conds) == 0 {

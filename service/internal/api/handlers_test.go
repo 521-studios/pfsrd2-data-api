@@ -1811,3 +1811,32 @@ func TestSuggestUnifiedHandler_FilterOnly(t *testing.T) {
 		t.Errorf("want [] for no q + no filter, got %v", empty)
 	}
 }
+
+// The level_min/level_max query params reach SuggestUnified end-to-end.
+func TestSuggestUnifiedHandler_LevelParams(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	get := func(q string) []db.UnifiedSuggestion {
+		req := httptest.NewRequest("GET", "/api/pfsrd2/search/suggest/unified?"+q, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		var out []db.UnifiedSuggestion
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out
+	}
+	// Adult Red Dragon is level 14.
+	in := get("q=dragon&type=monsters&level_min=14")
+	if len(in) != 1 || in[0].Name != "Adult Red Dragon" {
+		t.Errorf("level_min=14: want [Adult Red Dragon], got %v", in)
+	}
+	out := get("q=dragon&type=monsters&level_min=15")
+	if len(out) != 0 {
+		t.Errorf("level_min=15: want [], got %v", out)
+	}
+}

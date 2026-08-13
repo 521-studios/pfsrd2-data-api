@@ -1320,3 +1320,41 @@ func TestSuggestUnified_FilterOnly(t *testing.T) {
 		t.Errorf("want no results for empty q + no filter, got %v", none)
 	}
 }
+
+func TestSuggestUnified_LevelFilter(t *testing.T) {
+	db := testDB(t)
+	names := func(rs []UnifiedSuggestion) []string {
+		out := make([]string, len(rs))
+		for i, r := range rs {
+			out[i] = r.Name
+		}
+		return out
+	}
+	// Dragons (type=monsters, no alternates): Adult Red Dragon(14), Pseudodragon(2),
+	// Young Blue Dragon(9).
+	min9, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon", Types: []string{"monsters"}, LevelMin: "9"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !slices.Equal(names(min9), []string{"Adult Red Dragon", "Young Blue Dragon"}) {
+		t.Errorf("level>=9: want [Adult Red Dragon, Young Blue Dragon], got %v", names(min9))
+	}
+	max9, _ := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon", Types: []string{"monsters"}, LevelMax: "9"})
+	if !slices.Equal(names(max9), []string{"Pseudodragon", "Young Blue Dragon"}) {
+		t.Errorf("level<=9: want [Pseudodragon, Young Blue Dragon], got %v", names(max9))
+	}
+	exact, _ := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon", Types: []string{"monsters"}, LevelMin: "9", LevelMax: "9"})
+	if !slices.Equal(names(exact), []string{"Young Blue Dragon"}) {
+		t.Errorf("level 9-9: want [Young Blue Dragon], got %v", names(exact))
+	}
+	// A negative bound parses and applies: no dragon is level <= -2.
+	none, _ := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon", Types: []string{"monsters"}, LevelMax: "-2"})
+	if len(none) != 0 {
+		t.Errorf("level<=-2: want [], got %v", names(none))
+	}
+	// Filter-only browse: a level bound alone (no query) lists matches.
+	browse, _ := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"monsters"}, LevelMin: "14"})
+	if !slices.Equal(names(browse), []string{"Adult Red Dragon"}) {
+		t.Errorf("filter-only level>=14: want [Adult Red Dragon], got %v", names(browse))
+	}
+}
