@@ -491,10 +491,12 @@ func Facets(ctx context.Context, db *sql.DB, types []string) (map[string][]strin
 
 // TraitSuggestParams for GET /search/traits.
 type TraitSuggestParams struct {
-	Q        string   // trait-name prefix
-	Types    []string // content types to search within
-	Selected []string // already-chosen trait chips (results co-occur with all)
-	Limit    int      // hard cap at 50
+	Q           string   // trait-name prefix
+	Types       []string // content types to search within
+	Selected    []string // already-chosen trait chips (results co-occur with all)
+	Category    string   // item_category exact (narrow to co-occur within this facet)
+	Subcategory string   // item_subcategory exact
+	Limit       int      // hard cap at 50
 }
 
 // SuggestTraits returns distinct trait names for the trait-chip typeahead. Results
@@ -524,6 +526,8 @@ func SuggestTraits(ctx context.Context, db *sql.DB, p TraitSuggestParams) ([]str
 		conds = append(conds, "LOWER(je.value) <> LOWER(?)")
 		args = append(args, s)
 	}
+	// narrow co-occurrence to the active item facet (empty inputs contribute none)
+	conds, args = addAttrFilters(conds, args, "", p.Category, p.Subcategory)
 	if q := strings.TrimSpace(p.Q); q != "" {
 		conds = append(conds, "LOWER(je.value) LIKE ?")
 		args = append(args, strings.ToLower(q)+"%")

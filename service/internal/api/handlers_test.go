@@ -1749,3 +1749,27 @@ func TestSearchHandler_CategoryParam(t *testing.T) {
 		t.Errorf("want [Frost], got total=%d %v", res.Total, res.Results)
 	}
 }
+
+// Facet narrowing reaches SuggestTraits through the handler: subcategory=
+// Fundamental Weapon Runes leaves only Striking, so Cold (Frost, a Property Rune)
+// drops from the co-occurring traits.
+func TestSuggestTraitsHandler_FacetParam(t *testing.T) {
+	setupTestDB(t)
+	seedItems(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/search/traits?type=equipment&subcategory=Fundamental%20Weapon%20Runes", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var traits []string
+	if err := json.Unmarshal(w.Body.Bytes(), &traits); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !slices.Equal(traits, []string{"Evocation", "Magical"}) {
+		t.Errorf("want [Evocation Magical], got %v", traits)
+	}
+}

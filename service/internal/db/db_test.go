@@ -1247,3 +1247,24 @@ func TestSuggestUnified_AttrFilter(t *testing.T) {
 		t.Errorf("want no results for Frost filtered to Armor, got %v", none)
 	}
 }
+
+func TestSuggestTraits_FacetNarrows(t *testing.T) {
+	db := testDB(t)
+	// Category narrows co-occurrence: Consumables → only Healing Potion's traits.
+	byCat, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Category: "Consumables"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !slices.Equal(byCat, []string{"Healing", "Magical"}) {
+		t.Errorf("want [Healing Magical] under Consumables, got %v", byCat)
+	}
+	// Subcategory narrows further: Fundamental Weapon Runes → only Striking, so
+	// Cold (Frost, a Property Rune) drops out of the base [Cold Evocation Magical].
+	bySub, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Subcategory: "Fundamental Weapon Runes"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !slices.Equal(bySub, []string{"Evocation", "Magical"}) {
+		t.Errorf("want [Evocation Magical] under Fundamental Weapon Runes, got %v", bySub)
+	}
+}

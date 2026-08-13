@@ -48,7 +48,7 @@ GET /search?q=dragon&type=monsters&level=5-10&traits=fire,dragon&category=Runes&
 GET /search/suggest?q=dragon&type=monsters&traits=fire&category=Runes
 GET /search/suggest/unified?q=orc&type=monsters  (edition-aware, with alternates; also takes traits/category/subcategory)
 GET /search/facets?type=equipment&type=armor     → {"categories": {"Runes": ["Property Runes", ...], ...}}
-GET /search/traits?q=fi&type=creatures&trait=undead  → co-occurring trait typeahead (narrowed by type + selected chips)
+GET /search/traits?q=fi&type=creatures&trait=undead  → co-occurring trait typeahead (narrowed by type + selected chips; items may also pass category/subcategory)
 GET /types
 GET /sources
 GET /{type}?source=Bestiary&edition=legacy
