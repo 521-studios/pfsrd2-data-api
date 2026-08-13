@@ -771,20 +771,24 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 
 	// Filter-only browse: with no query text but an active trait/category/
 	// subcategory filter, list the matching entries (name order) so a picker can
-	// populate without typing. Empty query AND no filter → nothing (don't dump
-	// the whole catalog just because a type was passed).
-	hasFilters := p.Traits != "" || p.Category != "" || p.Subcategory != ""
-	if len(words) == 0 && !hasFilters {
-		return []UnifiedSuggestion{}, nil
-	}
-
+	// populate without typing.
 	var conds []string
 	var args []any
 	if len(words) > 0 {
 		conds, args = buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
 	}
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
+	beforeAttr := len(conds)
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	hasAttrFilter := len(conds) > beforeAttr
+
+	// Nothing to match on: no query words AND no real attribute filter → return
+	// nothing (a bare type must not dump the catalog; a degenerate filter such as
+	// traits="," produces no condition and is caught here, not just by the raw
+	// string being non-empty).
+	if len(words) == 0 && !hasAttrFilter {
+		return []UnifiedSuggestion{}, nil
+	}
 	if len(conds) == 0 {
 		conds = []string{"1=1"}
 	}

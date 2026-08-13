@@ -1293,6 +1293,24 @@ func TestSuggestUnified_FilterOnly(t *testing.T) {
 	if len(byTrait) != 1 || byTrait[0].Name != "Frost" {
 		t.Errorf("want [Frost] for empty q + Traits=Cold, got %v", byTrait)
 	}
+	// Empty query + a subcategory filter narrows to that subcategory (Frost is a
+	// Property Rune; Striking is a Fundamental Weapon Rune).
+	bySub, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}, Category: "Runes", Subcategory: "Property Runes"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(bySub) != 1 || bySub[0].Name != "Frost" {
+		t.Errorf("want [Frost] for empty q + Property Runes, got %v", bySub)
+	}
+	// A degenerate filter that yields no real condition (traits=",") must not dump
+	// the catalog — it's treated as no filter.
+	degenerate, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}, Traits: ","})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(degenerate) != 0 {
+		t.Errorf("want [] for a degenerate empty-token filter, got %v", degenerate)
+	}
 	// Empty query + NO filter → nothing (don't dump the catalog on type alone).
 	none, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Types: []string{"equipment"}})
 	if err != nil {
