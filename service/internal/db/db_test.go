@@ -3,6 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -93,6 +97,11 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		{"Monsters:404", "monsters", "Orc Scrapper", "1.3", "monsters/monster_core/orc_scrapper.json", "json/monsters/1.3/monster_core/orc_scrapper.json", 1, "Monster Core", "remastered", nil},
 		{"Monsters:405", "monsters", "Kobold Warrior", "1.3", "monsters/bestiary/kobold_warrior.json", "json/monsters/1.3/bestiary/kobold_warrior.json", -1, "Bestiary", "legacy", nil},
 		{"Monsters:406", "monsters", "Kobold Warrior", "1.3", "monsters/monster_core/kobold_warrior.json", "json/monsters/1.3/monster_core/kobold_warrior.json", 0, "Monster Core", "remastered", nil},
+		// Items — carry item_category/item_subcategory + traits (attrs set below).
+		{"Equipment:900", "equipment", "Striking", "1.0", "equipment/rune/striking.json", "json/equipment/1.0/rune/striking.json", 4, "Player Core", "remastered", nil},
+		{"Equipment:901", "equipment", "Frost", "1.0", "equipment/rune/frost.json", "json/equipment/1.0/rune/frost.json", 8, "Player Core", "remastered", nil},
+		{"Equipment:902", "equipment", "Healing Potion", "1.0", "equipment/consumable/healing_potion.json", "json/equipment/1.0/consumable/healing_potion.json", 1, "Player Core", "remastered", nil},
+		{"Armor:903", "armor", "Leather Armor", "1.0", "armor/base/leather_armor.json", "json/armor/1.0/base/leather_armor.json", 0, "Player Core", "remastered", nil},
 	}
 
 	for _, e := range entries {
@@ -116,6 +125,18 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 	}
 	if _, err := db.Exec(`UPDATE entries SET attrs = '{"traits":["Orc","Humanoid"]}' WHERE game_id = 'Monsters:400'`); err != nil {
 		t.Fatalf("update attrs: %v", err)
+	}
+	// Item attrs — traits + item_category/item_subcategory for facet/category tests.
+	itemAttrs := map[string]string{
+		"Equipment:900": `{"traits":["Evocation","Magical"],"item_category":"Runes","item_subcategory":"Fundamental Weapon Runes"}`,
+		"Equipment:901": `{"traits":["Cold","Evocation","Magical"],"item_category":"Runes","item_subcategory":"Property Runes"}`,
+		"Equipment:902": `{"traits":["Healing","Magical"],"item_category":"Consumables","item_subcategory":"Potions"}`,
+		"Armor:903":     `{"traits":["Comfort"],"item_category":"Armor","item_subcategory":"Base Armor"}`,
+	}
+	for gameID, attrs := range itemAttrs {
+		if _, err := db.Exec(`UPDATE entries SET attrs = ? WHERE game_id = ?`, attrs, gameID); err != nil {
+			t.Fatalf("update item attrs %s: %v", gameID, err)
+		}
 	}
 
 	// entry_versions: all entries have 1.3, some also have 1.2
@@ -681,8 +702,8 @@ func TestSearch_NoFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Total != 12 {
-		t.Errorf("expected 12 total entries, got %d", result.Total)
+	if result.Total != 16 {
+		t.Errorf("expected 16 total entries, got %d", result.Total)
 	}
 }
 
@@ -810,9 +831,9 @@ func TestSearch_DefaultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Default limit is 20, we have 12 entries
-	if len(result.Results) != 12 {
-		t.Errorf("expected all 12 entries with default limit, got %d", len(result.Results))
+	// Default limit is 20, we have 16 entries
+	if len(result.Results) != 16 {
+		t.Errorf("expected all 16 entries with default limit, got %d", len(result.Results))
 	}
 }
 
@@ -905,8 +926,8 @@ func TestTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(types) != 3 {
-		t.Fatalf("expected 3 types (monsters, npcs, spells), got %d", len(types))
+	if len(types) != 5 {
+		t.Fatalf("expected 5 types (armor, equipment, monsters, npcs, spells), got %d", len(types))
 	}
 	typeMap := map[string]int{}
 	for _, tc := range types {
@@ -996,5 +1017,233 @@ func TestSearch_TraitNoMatch(t *testing.T) {
 	}
 	if result.Total != 0 {
 		t.Errorf("expected 0 results for Undead trait, got %d", result.Total)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Facets + trait-suggest + attr-filter tests
+// ---------------------------------------------------------------------------
+
+func TestFacets_CategoriesAndSubcategories(t *testing.T) {
+	db := testDB(t)
+	facets, err := Facets(context.Background(), db, []string{"equipment", "armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string][]string{
+		"Runes":       {"Fundamental Weapon Runes", "Property Runes"}, // sorted
+		"Consumables": {"Potions"},
+		"Armor":       {"Base Armor"},
+	}
+	if len(facets) != len(want) {
+		t.Fatalf("expected %d categories, got %d (%v)", len(want), len(facets), facets)
+	}
+	for cat, subs := range want {
+		if !slices.Equal(facets[cat], subs) {
+			t.Errorf("category %q: want %v, got %v", cat, subs, facets[cat])
+		}
+	}
+}
+
+func TestFacets_TypeFilter(t *testing.T) {
+	db := testDB(t)
+	facets, err := Facets(context.Background(), db, []string{"armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(facets) != 1 || !slices.Equal(facets["Armor"], []string{"Base Armor"}) {
+		t.Errorf("expected only Armor->[Base Armor], got %v", facets)
+	}
+}
+
+func TestFacets_ExcludesCreatures(t *testing.T) {
+	db := testDB(t)
+	facets, err := Facets(context.Background(), db, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Creatures carry no item_category, so only the 3 item categories appear.
+	if len(facets) != 3 {
+		t.Errorf("expected 3 item categories, got %d (%v)", len(facets), facets)
+	}
+}
+
+func TestSuggestTraits_Base(t *testing.T) {
+	db := testDB(t)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Distinct traits across the 3 equipment items (armor "Comfort" excluded), sorted.
+	if !slices.Equal(traits, []string{"Cold", "Evocation", "Healing", "Magical"}) {
+		t.Errorf("unexpected traits: %v", traits)
+	}
+}
+
+func TestSuggestTraits_CoOccurrence(t *testing.T) {
+	db := testDB(t)
+	// Only Frost carries Cold → co-occurring traits are Evocation, Magical.
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Selected: []string{"Cold"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(traits, []string{"Evocation", "Magical"}) {
+		t.Errorf("want [Evocation Magical], got %v", traits)
+	}
+}
+
+func TestSuggestTraits_ExcludesSelectedCaseInsensitive(t *testing.T) {
+	db := testDB(t)
+	// Lowercase "magical" must match + be excluded from the output.
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Selected: []string{"magical"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tr := range traits {
+		if strings.EqualFold(tr, "magical") {
+			t.Fatalf("selected trait must be excluded, got %v", traits)
+		}
+	}
+	if !slices.Equal(traits, []string{"Cold", "Evocation", "Healing"}) {
+		t.Errorf("unexpected traits: %v", traits)
+	}
+}
+
+func TestSuggestTraits_Prefix(t *testing.T) {
+	db := testDB(t)
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"equipment"}, Q: "ev"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(traits, []string{"Evocation"}) {
+		t.Errorf("want [Evocation], got %v", traits)
+	}
+}
+
+func TestSuggest_CategoryFilter(t *testing.T) {
+	db := testDB(t)
+	got, err := Suggest(context.Background(), db, SuggestParams{Q: "frost", Category: "Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Frost" {
+		t.Errorf("want [Frost], got %v", got)
+	}
+	none, err := Suggest(context.Background(), db, SuggestParams{Q: "frost", Category: "Armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for Frost filtered to Armor, got %v", none)
+	}
+}
+
+func TestSuggest_TraitFilterCaseInsensitive(t *testing.T) {
+	db := testDB(t)
+	got, err := Suggest(context.Background(), db, SuggestParams{Q: "frost", Traits: "cold"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Frost" {
+		t.Errorf("want [Frost] for trait 'cold', got %v", got)
+	}
+}
+
+func TestSearch_CategorySubcategoryFilter(t *testing.T) {
+	db := testDB(t)
+	res, err := Search(context.Background(), db, SearchParams{Category: "Runes", Subcategory: "Property Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Total != 1 || len(res.Results) != 1 || res.Results[0].Name != "Frost" {
+		t.Errorf("want [Frost], got total=%d %v", res.Total, res.Results)
+	}
+}
+
+func TestSuggestTraits_LimitCap(t *testing.T) {
+	db := testDB(t)
+	// Seed one entry carrying 51 distinct traits (isolated via a unique type) so
+	// the >50 clamp is load-bearing: without it this returns 51 and the test fails.
+	names := make([]string, 51)
+	for i := range names {
+		names[i] = fmt.Sprintf("t%02d", i)
+	}
+	attrs, err := json.Marshal(map[string][]string{"traits": names})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Gadget:1','gadget','Widget','1.0','g/w.json','json/g/1.0/w.json','Player Core','remastered',?,'Widget')`, string(attrs)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"gadget"}, Limit: 100})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(traits) != 50 {
+		t.Errorf("51 distinct traits with Limit:100 must clamp to 50, got %d", len(traits))
+	}
+}
+
+func TestFacets_CategoryWithoutSubcategory(t *testing.T) {
+	db := testDB(t)
+	// An item with item_category set but no item_subcategory must still list,
+	// with an empty subcategory slice.
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Equipment:910','equipment','Bag of Holding','1.0','equipment/gear/bag.json','json/equipment/1.0/gear/bag.json','Player Core','remastered','{"item_category":"Adventuring Gear"}','Bag of Holding')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	facets, err := Facets(context.Background(), db, []string{"equipment"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	subs, ok := facets["Adventuring Gear"]
+	if !ok {
+		t.Fatalf("expected 'Adventuring Gear' category to list, got %v", facets)
+	}
+	if len(subs) != 0 {
+		t.Errorf("expected empty subcategory slice, got %v", subs)
+	}
+}
+
+func TestSuggest_ShortQueryWithFilter(t *testing.T) {
+	db := testDB(t)
+	// The <3-char path uses exact name match (no trigram) — insert a short-named
+	// item so we can drive it with a filter. Exact match needs no FTS rebuild.
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Equipment:920','equipment','Xy','1.0','equipment/rune/xy.json','json/equipment/1.0/rune/xy.json','Player Core','remastered','{"traits":["Magical"],"item_category":"Runes","item_subcategory":"Property Runes"}','Xy')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := Suggest(context.Background(), db, SuggestParams{Q: "Xy", Category: "Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Xy" {
+		t.Errorf("want [Xy] for short query + Category=Runes, got %v", got)
+	}
+	none, err := Suggest(context.Background(), db, SuggestParams{Q: "Xy", Category: "Armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for Xy filtered to Armor, got %v", none)
+	}
+}
+
+func TestSuggestUnified_AttrFilter(t *testing.T) {
+	db := testDB(t)
+	got, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "frost", Category: "Runes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Frost" {
+		t.Errorf("want [Frost], got %v", got)
+	}
+	none, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "frost", Category: "Armor"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no results for Frost filtered to Armor, got %v", none)
 	}
 }

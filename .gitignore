@@ -10,3 +10,4 @@ service/local
 terraform/.terraform/
 terraform/.terraform.lock.hcl
 .env
+.claude/

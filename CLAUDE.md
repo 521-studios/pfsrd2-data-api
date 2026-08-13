@@ -44,9 +44,11 @@ All API lookups use game_id, not aonid (which is Archives of Nethys-specific).
 ## Key endpoints
 
 ```
-GET /search?q=dragon&type=monsters&level=5-10
-GET /search/suggest?q=dragon&type=monsters
-GET /search/suggest/unified?q=orc&type=monsters  (edition-aware, with alternates)
+GET /search?q=dragon&type=monsters&level=5-10&traits=fire,dragon&category=Runes&subcategory=Property%20Runes
+GET /search/suggest?q=dragon&type=monsters&traits=fire&category=Runes
+GET /search/suggest/unified?q=orc&type=monsters  (edition-aware, with alternates; also takes traits/category/subcategory)
+GET /search/facets?type=equipment&type=armor     → {"categories": {"Runes": ["Property Runes", ...], ...}}
+GET /search/traits?q=fi&type=creatures&trait=undead  → co-occurring trait typeahead (narrowed by type + selected chips)
 GET /types
 GET /sources
 GET /{type}?source=Bestiary&edition=legacy

@@ -102,14 +102,16 @@ type TypeCount struct {
 
 // SearchParams mirrors the GET /search query parameters.
 type SearchParams struct {
-	Q       string // full-text query (FTS5 prefix search)
-	Type    string
-	Level   string // "3" or "1-5" (range)
-	Source  string
-	Edition string
-	Traits  string // comma-separated
-	Limit   int    // default 20
-	Offset  int
+	Q           string // full-text query (FTS5 prefix search)
+	Type        string
+	Level       string // "3" or "1-5" (range)
+	Source      string
+	Edition     string
+	Traits      string // comma-separated (AND)
+	Category    string // item_category exact
+	Subcategory string // item_subcategory exact
+	Limit       int    // default 20
+	Offset      int
 	// ApplicableTo filters for a creature's edition: entries of that
 	// edition (or edition-less), plus other-edition entries with no
 	// same-edition counterpart via alternates or curated equivalents —
@@ -131,6 +133,31 @@ func hasTable(ctx context.Context, db *sql.DB, name string) bool {
 type SearchResult struct {
 	Results []Entry `json:"results"`
 	Total   int     `json:"total"`
+}
+
+// addAttrFilters appends the JSON attrs filters shared by Search and the suggest
+// endpoints — traits (comma-separated, AND, case-insensitive), item_category, and
+// item_subcategory. Entries are aliased `e`, so callers must use that alias. Empty
+// inputs contribute nothing.
+func addAttrFilters(conds []string, args []any, traits, category, subcategory string) ([]string, []any) {
+	for _, trait := range strings.Split(traits, ",") {
+		t := strings.TrimSpace(trait)
+		if t == "" {
+			continue
+		}
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM json_each(json_extract(e.attrs,'$.traits')) WHERE LOWER(value) = LOWER(?))")
+		args = append(args, t)
+	}
+	if category != "" {
+		conds = append(conds, "json_extract(e.attrs,'$.item_category') = ?")
+		args = append(args, category)
+	}
+	if subcategory != "" {
+		conds = append(conds, "json_extract(e.attrs,'$.item_subcategory') = ?")
+		args = append(args, subcategory)
+	}
+	return conds, args
 }
 
 // Search runs a hybrid FTS5 + structured-filter query over entries.
@@ -180,19 +207,8 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 			args = append(args, p.ApplicableTo)
 		}
 	}
-	if p.Traits != "" {
-		// Filter: any of the requested traits appear in attrs.traits JSON array.
-		// We use json_each for portability across SQLite versions.
-		for _, trait := range strings.Split(p.Traits, ",") {
-			t := strings.TrimSpace(trait)
-			if t == "" {
-				continue
-			}
-			conds = append(conds,
-				"EXISTS (SELECT 1 FROM json_each(json_extract(e.attrs,'$.traits')) WHERE value = ?)")
-			args = append(args, t)
-		}
-	}
+	// traits (AND, case-insensitive) + item_category/item_subcategory
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
 	if p.Level != "" {
 		if strings.Contains(p.Level, "-") {
 			parts := strings.SplitN(p.Level, "-", 2)
@@ -417,6 +433,129 @@ func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Facets (category/subcategory + trait typeahead)
+// ---------------------------------------------------------------------------
+
+// addTypeFilter appends an `e.type IN (...)` condition for the given content
+// types (nothing when types is empty). Entries must be aliased `e`. Shared by
+// addTypeVersionFilters, Facets, and SuggestTraits.
+func addTypeFilter(conds []string, args []any, types []string) ([]string, []any) {
+	if len(types) == 0 {
+		return conds, args
+	}
+	ph := make([]string, len(types))
+	for i, t := range types {
+		ph[i] = "?"
+		args = append(args, t)
+	}
+	return append(conds, "e.type IN ("+strings.Join(ph, ",")+")"), args
+}
+
+// Facets returns the distinct item categories present in the index (optionally
+// restricted to the given content types), each mapped to its sorted list of
+// subcategories. Populates the cascading category/subcategory filter dropdowns.
+func Facets(ctx context.Context, db *sql.DB, types []string) (map[string][]string, error) {
+	conds := []string{"json_extract(e.attrs,'$.item_category') IS NOT NULL"}
+	args := []any{}
+	conds, args = addTypeFilter(conds, args, types)
+	query := fmt.Sprintf(`
+		SELECT DISTINCT json_extract(e.attrs,'$.item_category')    AS cat,
+		                json_extract(e.attrs,'$.item_subcategory') AS subcat
+		FROM entries e
+		WHERE %s
+		ORDER BY cat, subcat
+	`, strings.Join(conds, " AND "))
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("facets: %w", err)
+	}
+	defer rows.Close()
+
+	facets := map[string][]string{}
+	for rows.Next() {
+		var cat string
+		var subcat *string
+		if err := rows.Scan(&cat, &subcat); err != nil {
+			return nil, fmt.Errorf("scan facet: %w", err)
+		}
+		if _, ok := facets[cat]; !ok {
+			facets[cat] = []string{} // category with no subcategories still lists
+		}
+		if subcat != nil && *subcat != "" {
+			facets[cat] = append(facets[cat], *subcat)
+		}
+	}
+	return facets, rows.Err()
+}
+
+// TraitSuggestParams for GET /search/traits.
+type TraitSuggestParams struct {
+	Q        string   // trait-name prefix
+	Types    []string // content types to search within
+	Selected []string // already-chosen trait chips (results co-occur with all)
+	Limit    int      // hard cap at 50
+}
+
+// SuggestTraits returns distinct trait names for the trait-chip typeahead. Results
+// are co-occurrence–filtered: only traits carried by entries that match p.Types
+// AND already carry every trait in p.Selected (so a suggestion always narrows
+// further). p.Q prefix-filters the trait name; p.Selected traits are excluded from
+// the output. Case-insensitive throughout. Limit hard-capped at 50.
+func SuggestTraits(ctx context.Context, db *sql.DB, p TraitSuggestParams) ([]string, error) {
+	limit := p.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	conds := []string{"1=1"}
+	args := []any{}
+
+	conds, args = addTypeFilter(conds, args, p.Types)
+	// each already-selected trait must be present on the entry (AND)
+	for _, s := range p.Selected {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		conds = append(conds,
+			"EXISTS (SELECT 1 FROM json_each(json_extract(e.attrs,'$.traits')) WHERE LOWER(value) = LOWER(?))")
+		args = append(args, s)
+		// don't offer a trait that's already a chip
+		conds = append(conds, "LOWER(je.value) <> LOWER(?)")
+		args = append(args, s)
+	}
+	if q := strings.TrimSpace(p.Q); q != "" {
+		conds = append(conds, "LOWER(je.value) LIKE ?")
+		args = append(args, strings.ToLower(q)+"%")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT je.value
+		FROM entries e, json_each(json_extract(e.attrs,'$.traits')) je
+		WHERE %s
+		ORDER BY je.value
+		LIMIT ?
+	`, strings.Join(conds, " AND "))
+	args = append(args, limit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("suggest traits: %w", err)
+	}
+	defer rows.Close()
+
+	traits := make([]string, 0, limit)
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("scan trait: %w", err)
+		}
+		traits = append(traits, t)
+	}
+	return traits, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
 // Suggest (typeahead)
 // ---------------------------------------------------------------------------
 
@@ -431,10 +570,13 @@ type Suggestion struct {
 
 // SuggestParams for GET /search/suggest.
 type SuggestParams struct {
-	Q       string   // trigram search query (min 3 chars)
-	Types   []string // content types to include
-	Version string   // only entries with this schema version in entry_versions
-	Limit   int      // hard cap at 15
+	Q           string   // trigram search query (min 3 chars)
+	Types       []string // content types to include
+	Version     string   // only entries with this schema version in entry_versions
+	Traits      string   // comma-separated (AND)
+	Category    string   // item_category exact
+	Subcategory string   // item_subcategory exact
+	Limit       int      // hard cap at 15
 }
 
 // suggestShortQuery handles queries where all words are < 3 chars (too short for trigrams).
@@ -462,6 +604,8 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
 		args = append(args, p.Version)
 	}
+
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
 
 	where := strings.Join(conds, " AND ")
 	sqlQuery := fmt.Sprintf(`
@@ -518,14 +662,7 @@ func buildWordMatchConds(words []string, hasTrailingSpace bool) (conds []string,
 
 // addTypeVersionFilters appends type and version filter conditions.
 func addTypeVersionFilters(conds []string, args []any, types []string, version string) ([]string, []any) {
-	if len(types) > 0 {
-		placeholders := make([]string, len(types))
-		for i, t := range types {
-			placeholders[i] = "?"
-			args = append(args, t)
-		}
-		conds = append(conds, "e.type IN ("+strings.Join(placeholders, ",")+")")
-	}
+	conds, args = addTypeFilter(conds, args, types)
 	if version != "" {
 		conds = append(conds,
 			"EXISTS (SELECT 1 FROM entry_versions ev WHERE ev.game_id = e.game_id AND ev.schema_version = ?)")
@@ -560,6 +697,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 
 	conds, args := buildWordMatchConds(words, hasTrailingSpace)
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
 	where := strings.Join(conds, " AND ")
 
 	query := fmt.Sprintf(`
@@ -606,10 +744,13 @@ type UnifiedSuggestion struct {
 
 // UnifiedSuggestParams for GET /search/suggest/unified.
 type UnifiedSuggestParams struct {
-	Q       string
-	Types   []string
-	Version string
-	Limit   int
+	Q           string
+	Types       []string
+	Version     string
+	Traits      string // comma-separated (AND)
+	Category    string // item_category exact
+	Subcategory string // item_subcategory exact
+	Limit       int
 }
 
 // SuggestUnified runs a typeahead search that joins alternates to produce
@@ -630,6 +771,7 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 
 	conds, args := buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
 	where := strings.Join(conds, " AND ")
 
 	query := fmt.Sprintf(`

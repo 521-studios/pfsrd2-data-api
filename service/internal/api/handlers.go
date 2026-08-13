@@ -87,6 +87,8 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/search", h.search)
 		r.Get("/search/suggest", h.suggest)
 		r.Get("/search/suggest/unified", h.suggestUnified)
+		r.Get("/search/facets", h.facets)
+		r.Get("/search/traits", h.suggestTraits)
 		r.Get("/types", h.types)
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
@@ -125,6 +127,8 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		Source:       r.URL.Query().Get("source"),
 		Edition:      r.URL.Query().Get("edition"),
 		Traits:       r.URL.Query().Get("traits"),
+		Category:     r.URL.Query().Get("category"),
+		Subcategory:  r.URL.Query().Get("subcategory"),
 		Limit:        queryInt(r, "limit", 20),
 		Offset:       queryInt(r, "offset", 0),
 		ApplicableTo: r.URL.Query().Get("applicable_to"),
@@ -148,10 +152,13 @@ func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := db.SuggestParams{
-		Q:       q,
-		Types:   r.URL.Query()["type"],
-		Version: r.URL.Query().Get("version"),
-		Limit:   queryInt(r, "limit", 15),
+		Q:           q,
+		Types:       r.URL.Query()["type"],
+		Version:     r.URL.Query().Get("version"),
+		Traits:      r.URL.Query().Get("traits"),
+		Category:    r.URL.Query().Get("category"),
+		Subcategory: r.URL.Query().Get("subcategory"),
+		Limit:       queryInt(r, "limit", 15),
 	}
 	results, err := db.Suggest(r.Context(), db.Global(), p)
 	if err != nil {
@@ -172,10 +179,13 @@ func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := db.UnifiedSuggestParams{
-		Q:       q,
-		Types:   r.URL.Query()["type"],
-		Version: r.URL.Query().Get("version"),
-		Limit:   queryInt(r, "limit", 15),
+		Q:           q,
+		Types:       r.URL.Query()["type"],
+		Version:     r.URL.Query().Get("version"),
+		Traits:      r.URL.Query().Get("traits"),
+		Category:    r.URL.Query().Get("category"),
+		Subcategory: r.URL.Query().Get("subcategory"),
+		Limit:       queryInt(r, "limit", 15),
 	}
 	results, err := db.SuggestUnified(r.Context(), db.Global(), p)
 	if err != nil {
@@ -183,6 +193,40 @@ func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, results)
+}
+
+// ---------------------------------------------------------------------------
+// GET /search/facets — distinct item categories -> subcategories (for the
+// cascading category/subcategory filter dropdowns). Optional ?type= (repeatable).
+// ---------------------------------------------------------------------------
+
+func (h *handler) facets(w http.ResponseWriter, r *http.Request) {
+	categories, err := db.Facets(r.Context(), db.Global(), r.URL.Query()["type"])
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]any{"categories": categories})
+}
+
+// ---------------------------------------------------------------------------
+// GET /search/traits — co-occurring trait typeahead for the filter chips.
+// ?q= prefix, ?type= (repeatable) content types, ?trait= (repeatable) already-
+// selected chips (results are narrowed to traits that co-occur with all of them).
+// ---------------------------------------------------------------------------
+
+func (h *handler) suggestTraits(w http.ResponseWriter, r *http.Request) {
+	traits, err := db.SuggestTraits(r.Context(), db.Global(), db.TraitSuggestParams{
+		Q:        r.URL.Query().Get("q"),
+		Types:    r.URL.Query()["type"],
+		Selected: r.URL.Query()["trait"],
+		Limit:    queryInt(r, "limit", 50),
+	})
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, traits)
 }
 
 // ---------------------------------------------------------------------------
