@@ -158,6 +158,8 @@ func (h *handler) suggest(w http.ResponseWriter, r *http.Request) {
 		Traits:      r.URL.Query().Get("traits"),
 		Category:    r.URL.Query().Get("category"),
 		Subcategory: r.URL.Query().Get("subcategory"),
+		LevelMin:    r.URL.Query().Get("level_min"),
+		LevelMax:    r.URL.Query().Get("level_max"),
 		Limit:       queryInt(r, "limit", 15),
 	}
 	results, err := db.Suggest(r.Context(), db.Global(), p)
@@ -177,9 +179,11 @@ func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 	traits := r.URL.Query().Get("traits")
 	category := r.URL.Query().Get("category")
 	subcategory := r.URL.Query().Get("subcategory")
-	// Empty query with no filter → nothing. A trait/category/subcategory filter
-	// makes it a filter-only browse (the picker lists matches without typing).
-	if len(q) == 0 && traits == "" && category == "" && subcategory == "" {
+	levelMin := r.URL.Query().Get("level_min")
+	levelMax := r.URL.Query().Get("level_max")
+	// Empty query with no filter → nothing. Any filter (trait/category/subcategory
+	// or level) makes it a filter-only browse (the picker lists matches without typing).
+	if len(q) == 0 && traits == "" && category == "" && subcategory == "" && levelMin == "" && levelMax == "" {
 		jsonOK(w, []db.UnifiedSuggestion{})
 		return
 	}
@@ -190,6 +194,8 @@ func (h *handler) suggestUnified(w http.ResponseWriter, r *http.Request) {
 		Traits:      traits,
 		Category:    category,
 		Subcategory: subcategory,
+		LevelMin:    levelMin,
+		LevelMax:    levelMax,
 		Limit:       queryInt(r, "limit", 15),
 	}
 	results, err := db.SuggestUnified(r.Context(), db.Global(), p)
