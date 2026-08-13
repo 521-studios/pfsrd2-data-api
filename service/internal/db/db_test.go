@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -1160,14 +1162,26 @@ func TestSearch_CategorySubcategoryFilter(t *testing.T) {
 
 func TestSuggestTraits_LimitCap(t *testing.T) {
 	db := testDB(t)
-	// >50 is clamped to 50; we don't have 50 traits, but the clamp must not error
-	// and must not exceed 50. Assert it's bounded.
-	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Limit: 100})
+	// Seed one entry carrying 51 distinct traits (isolated via a unique type) so
+	// the >50 clamp is load-bearing: without it this returns 51 and the test fails.
+	names := make([]string, 51)
+	for i := range names {
+		names[i] = fmt.Sprintf("t%02d", i)
+	}
+	attrs, err := json.Marshal(map[string][]string{"traits": names})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text)
+		VALUES('Gadget:1','gadget','Widget','1.0','g/w.json','json/g/1.0/w.json','Player Core','remastered',?,'Widget')`, string(attrs)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	traits, err := SuggestTraits(context.Background(), db, TraitSuggestParams{Types: []string{"gadget"}, Limit: 100})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(traits) > 50 {
-		t.Errorf("limit should cap at 50, got %d", len(traits))
+	if len(traits) != 50 {
+		t.Errorf("51 distinct traits with Limit:100 must clamp to 50, got %d", len(traits))
 	}
 }
 
