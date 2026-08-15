@@ -678,6 +678,16 @@ func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue
 	replaceText := func(m map[string]any) {
 		for key, val := range m {
 			if s, ok := val.(string); ok {
+				// A field whose entire value is a bare number (e.g. a weapon
+				// mode's hands:"1") is a numeric value stored as a string, not
+				// display text — text-syncing it corrupts an unrelated field
+				// that merely shares the old digit (Striking's dice_count 1->2
+				// turned a 1-handed rapier into hands:"2"). Real display text
+				// carries units/labels/dice notation ("25 feet", "DC 20", "1d6")
+				// and is never a bare number, so it still syncs.
+				if bareNumber.MatchString(s) {
+					continue
+				}
 				updated := pattern.ReplaceAllString(s, "${1}"+newStr+"${2}")
 				if updated != s {
 					m[key] = updated
@@ -1332,6 +1342,10 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 
 // diceFormula matches "NdX" with an optional flat modifier, e.g. "2d8+9".
 var diceFormula = regexp.MustCompile(`^(\d+)d(\d+)([+-]\d+)?$`)
+
+// bareNumber matches a string that is nothing but a number (optionally decimal),
+// i.e. a numeric value stored as a string rather than display text.
+var bareNumber = regexp.MustCompile(`^\s*\d+(\.\d+)?\s*$`)
 
 // diceCand is a damage entry eligible for conversion to the target type.
 type diceCand struct {
