@@ -238,6 +238,29 @@ func TestSuggest_SubstringMatch(t *testing.T) {
 	}
 }
 
+func TestSuggest_CarriesItemCategory(t *testing.T) {
+	db := testDB(t)
+	// The plain /search/suggest path shares the same SELECT/scan as suggestShortQuery,
+	// so this guards both against an off-by-one in the added category columns.
+	results, err := Suggest(context.Background(), db, SuggestParams{Q: "striking"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var s *Suggestion
+	for i := range results {
+		if results[i].Name == "Striking" {
+			s = &results[i]
+		}
+	}
+	if s == nil {
+		t.Fatalf("Striking not in results: %+v", results)
+	}
+	if s.ItemCategory == nil || *s.ItemCategory != "Runes" ||
+		s.ItemSubcategory == nil || *s.ItemSubcategory != "Fundamental Weapon Runes" {
+		t.Errorf("category=%v subcategory=%v, want Runes / Fundamental Weapon Runes", s.ItemCategory, s.ItemSubcategory)
+	}
+}
+
 func TestSuggest_TypeFilter(t *testing.T) {
 	db := testDB(t)
 	results, err := Suggest(context.Background(), db, SuggestParams{
@@ -641,6 +664,41 @@ func TestSuggestUnified_TypeFilter(t *testing.T) {
 	for _, s := range results {
 		if s.Type != "spells" {
 			t.Errorf("expected type=spells, got %q for %q", s.Type, s.Name)
+		}
+	}
+}
+
+func TestSuggestUnified_CarriesItemCategory(t *testing.T) {
+	db := testDB(t)
+	// An item row carries item_category/item_subcategory (as first-class as traits).
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "striking"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var striking *UnifiedSuggestion
+	for i := range results {
+		if results[i].Name == "Striking" {
+			striking = &results[i]
+		}
+	}
+	if striking == nil {
+		t.Fatalf("Striking not in results: %+v", results)
+	}
+	if striking.ItemCategory == nil || *striking.ItemCategory != "Runes" {
+		t.Errorf("item_category = %v, want Runes", striking.ItemCategory)
+	}
+	if striking.ItemSubcategory == nil || *striking.ItemSubcategory != "Fundamental Weapon Runes" {
+		t.Errorf("item_subcategory = %v, want Fundamental Weapon Runes", striking.ItemSubcategory)
+	}
+
+	// A creature has no item_category → nil (omitted from JSON).
+	cres, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range cres {
+		if s.Type != "equipment" && s.Type != "armor" && s.ItemCategory != nil {
+			t.Errorf("%s (%s) should have nil item_category, got %v", s.Name, s.Type, *s.ItemCategory)
 		}
 	}
 }
