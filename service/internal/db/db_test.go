@@ -238,6 +238,29 @@ func TestSuggest_SubstringMatch(t *testing.T) {
 	}
 }
 
+func TestSuggest_CarriesItemCategory(t *testing.T) {
+	db := testDB(t)
+	// The plain /search/suggest path shares the same SELECT/scan as suggestShortQuery,
+	// so this guards both against an off-by-one in the added category columns.
+	results, err := Suggest(context.Background(), db, SuggestParams{Q: "striking"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var s *Suggestion
+	for i := range results {
+		if results[i].Name == "Striking" {
+			s = &results[i]
+		}
+	}
+	if s == nil {
+		t.Fatalf("Striking not in results: %+v", results)
+	}
+	if s.ItemCategory == nil || *s.ItemCategory != "Runes" ||
+		s.ItemSubcategory == nil || *s.ItemSubcategory != "Fundamental Weapon Runes" {
+		t.Errorf("category=%v subcategory=%v, want Runes / Fundamental Weapon Runes", s.ItemCategory, s.ItemSubcategory)
+	}
+}
+
 func TestSuggest_TypeFilter(t *testing.T) {
 	db := testDB(t)
 	results, err := Suggest(context.Background(), db, SuggestParams{
