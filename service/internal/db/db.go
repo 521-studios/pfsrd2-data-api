@@ -357,7 +357,10 @@ func EquipmentByAttr(ctx context.Context, db *sql.DB, attrPath, value, edition s
 		WHERE type = 'equipment' AND json_extract(attrs, ?) = ?`
 	args := []any{attrPath, value}
 	if edition != "" {
-		q += ` AND edition = ?`
+		// Include edition-agnostic candidates (a rune/material with no cross-edition
+		// counterpart has a NULL/empty edition) — NULL = 'remastered' is NULL in SQL,
+		// so a plain `edition = ?` would silently drop them.
+		q += ` AND (edition = ? OR edition IS NULL OR edition = '')`
 		args = append(args, edition)
 	}
 	rows, err := db.QueryContext(ctx, q, args...)

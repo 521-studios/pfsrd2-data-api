@@ -1358,3 +1358,47 @@ func TestSuggestUnified_LevelFilter(t *testing.T) {
 		t.Errorf("filter-only level>=14: want [Adult Red Dragon], got %v", names(browse))
 	}
 }
+
+func TestEquipmentByAttr_HostAndEditionScoped(t *testing.T) {
+	d := testDB(t)
+	ins := func(gameID, edition, attrs string) {
+		if _, err := d.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version,
+			base_path, s3_key, edition, attrs) VALUES(?,?,?,?,?,?,?,?)`,
+			gameID, "equipment", gameID, "1.3", "equipment/b/x.json", "json/equipment/1.3/b/x.json", edition, attrs); err != nil {
+			t.Fatalf("insert %s: %v", gameID, err)
+		}
+	}
+	ins("re", "remastered", `{"rune_host":"weapon"}`)
+	ins("leg", "legacy", `{"rune_host":"weapon"}`)
+	ins("armor", "remastered", `{"rune_host":"armor"}`)
+	// A rune with no cross-edition counterpart (edition-agnostic).
+	if _, err := d.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version,
+		base_path, s3_key, edition, attrs) VALUES(?,?,?,?,?,?,NULL,?)`,
+		"agnostic", "equipment", "agnostic", "1.3", "equipment/b/x.json", "json/equipment/1.3/b/x.json",
+		`{"rune_host":"weapon"}`); err != nil {
+		t.Fatalf("insert agnostic: %v", err)
+	}
+
+	got, err := EquipmentByAttr(context.Background(), d, "$.rune_host", "weapon", "remastered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Host filter drops the armor rune; edition filter drops the legacy one; the
+	// edition-agnostic (NULL) rune is INCLUDED.
+	ids := map[string]bool{}
+	for _, e := range got {
+		ids[e.GameID] = true
+	}
+	if len(got) != 2 || !ids["re"] || !ids["agnostic"] {
+		t.Fatalf("got %v, want {re, agnostic} (NULL-edition included, legacy/armor excluded)", ids)
+	}
+
+	// Empty edition = no edition filter → all three weapon-host runes.
+	all, err := EquipmentByAttr(context.Background(), d, "$.rune_host", "weapon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("unfiltered got %d, want 3", len(all))
+	}
+}

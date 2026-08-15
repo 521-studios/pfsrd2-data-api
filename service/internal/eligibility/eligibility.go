@@ -100,8 +100,8 @@ type Grade struct {
 }
 
 // clauseValues returns the item fact values a clause path resolves against. The
-// corpus uses exactly five paths, matched by substring so a schema tweak to the
-// exact JSONPath text doesn't silently break matching.
+// corpus uses exactly five paths: four are matched by substring (so a tweak to the
+// exact JSONPath text won't silently break them), and $.name by exact equality.
 func clauseValues(path string, f ItemFacts) []string {
 	switch {
 	case strings.Contains(path, "weapon_type"):

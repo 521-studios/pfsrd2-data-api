@@ -13,6 +13,8 @@ type Response struct {
 	Spells    *SpellOptions       `json:"spells,omitempty"`
 }
 
+// ItemRef identifies the item the eligibility was computed for. Host is "" when the
+// item is not a rune/material host (e.g. a consumable or a spell holder).
 type ItemRef struct {
 	GameID string `json:"game_id"`
 	Name   string `json:"name"`
@@ -20,11 +22,14 @@ type ItemRef struct {
 	Host   string `json:"host,omitempty"`
 }
 
+// RuneGroups splits the eligible runes by form (fundamental potency/striking/…
+// first, then property). Both are always present (possibly empty) for a stable shape.
 type RuneGroups struct {
 	Fundamental []RuneCandidate `json:"fundamental"`
 	Property    []RuneCandidate `json:"property"`
 }
 
+// RuneCandidate is one eligible rune with the grades needed to render + pick one.
 type RuneCandidate struct {
 	GameID string  `json:"game_id"`
 	Name   string  `json:"name"`
@@ -32,6 +37,8 @@ type RuneCandidate struct {
 	Grades []Grade `json:"grades"`
 }
 
+// MaterialCandidate is one material the item can be made of, with its grade caps
+// (the consumer applies max_rune_level once a grade is chosen).
 type MaterialCandidate struct {
 	GameID       string          `json:"game_id"`
 	Name         string          `json:"name"`
@@ -40,6 +47,7 @@ type MaterialCandidate struct {
 	GrantsTraits []string        `json:"grants_traits,omitempty"`
 }
 
+// MaterialGrade is one grade of a material; MaxRuneLevel absent = unbounded (high).
 type MaterialGrade struct {
 	Grade        string `json:"grade"`
 	MaxItemLevel *int   `json:"max_item_level,omitempty"`

@@ -91,3 +91,54 @@ func TestGetEntryEligible_NotFound(t *testing.T) {
 		t.Fatalf("code %d, want 404", w.Code)
 	}
 }
+
+// A spell holder (wand) is not a rune/material host, but its own spell-slot
+// constraints come back under `spells`.
+func TestGetEntryEligible_SpellHolder(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+	if _, err := db.Global().Exec(`INSERT INTO entries(game_id, type, name, current_schema_version,
+		base_path, s3_key, edition, attrs) VALUES(?,?,?,?,?,?,?,?)`,
+		"wand1", "equipment", "Magic Wand", "1.3", "equipment/b/w.json", "json/equipment/1.3/b/w.json", "remastered",
+		`{"spell_holder":"wand","spell_max_rank":9,"spell_excluded_types":["cantrip","focus","ritual"],"spell_has_constraint_text":false}`); err != nil {
+		t.Fatal(err)
+	}
+	var resp eligibility.Response
+	doEligible(t, r, "wand1", &resp)
+	if resp.Item.Host != "" || len(resp.Runes.Fundamental) != 0 || len(resp.Materials) != 0 {
+		t.Fatalf("a non-host holder should have no runes/materials: %+v", resp)
+	}
+	if resp.Spells == nil || resp.Spells.Holder != "wand" {
+		t.Fatalf("spells = %+v, want a wand holder", resp.Spells)
+	}
+}
+
+// A non-host, non-holder item (e.g. a consumable) returns 200 with empty groups.
+func TestGetEntryEligible_NonHost(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+	if _, err := db.Global().Exec(`INSERT INTO entries(game_id, type, name, current_schema_version,
+		base_path, s3_key, edition, attrs) VALUES(?,?,?,?,?,?,?,?)`,
+		"potion1", "equipment", "Healing Potion", "1.3", "equipment/b/p.json", "json/equipment/1.3/b/p.json", "remastered",
+		`{"item_category":"Consumables"}`); err != nil {
+		t.Fatal(err)
+	}
+	var resp eligibility.Response
+	doEligible(t, r, "potion1", &resp)
+	if resp.Item.Host != "" || len(resp.Runes.Property) != 0 || len(resp.Materials) != 0 || resp.Spells != nil {
+		t.Fatalf("non-host item should return empty groups: %+v", resp)
+	}
+}
+
+func doEligible(t *testing.T, r http.Handler, gameID string, out *eligibility.Response) {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/pfsrd2/entries/"+gameID+"/eligible", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code %d: %s", w.Code, w.Body)
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
