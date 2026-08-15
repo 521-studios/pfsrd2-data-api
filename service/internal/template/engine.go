@@ -677,17 +677,17 @@ func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue
 
 	replaceText := func(m map[string]any) {
 		for key, val := range m {
+			// Only sync display-text fields — the rendered copies of a number
+			// that must track the value they render: a speed's "25 feet" name,
+			// an ability/hardness "Hardness 6" text, a strike's "1d6" formula.
+			// Every other string in these ancestor maps is a value stored as a
+			// string (a weapon mode's hands "1" or "1 or 2", a bulk) that merely
+			// shares the old digit; rewriting it corrupts an unrelated field
+			// (Striking's dice_count 1->2 was turning hands into "2" / "2 or 2").
+			if !displayTextKeys[key] {
+				continue
+			}
 			if s, ok := val.(string); ok {
-				// A field whose entire value is a bare number (e.g. a weapon
-				// mode's hands:"1") is a numeric value stored as a string, not
-				// display text — text-syncing it corrupts an unrelated field
-				// that merely shares the old digit (Striking's dice_count 1->2
-				// turned a 1-handed rapier into hands:"2"). Real display text
-				// carries units/labels/dice notation ("25 feet", "DC 20", "1d6")
-				// and is never a bare number, so it still syncs.
-				if bareNumber.MatchString(s) {
-					continue
-				}
 				updated := pattern.ReplaceAllString(s, "${1}"+newStr+"${2}")
 				if updated != s {
 					m[key] = updated
@@ -1343,9 +1343,11 @@ func applyReplaceHighestWith(rv ResolvedValue, eff Effect) error {
 // diceFormula matches "NdX" with an optional flat modifier, e.g. "2d8+9".
 var diceFormula = regexp.MustCompile(`^(\d+)d(\d+)([+-]\d+)?$`)
 
-// bareNumber matches a string that is nothing but a number (optionally decimal),
-// i.e. a numeric value stored as a string rather than display text.
-var bareNumber = regexp.MustCompile(`^\s*\d+(\.\d+)?\s*$`)
+// displayTextKeys are the stat-block string fields that carry a rendered copy of a
+// number and must track the value they render — everything else that reads as a
+// number is a value stored as a string and must never be text-synced. See
+// updateSiblingText.
+var displayTextKeys = map[string]bool{"name": true, "text": true, "formula": true}
 
 // diceCand is a damage entry eligible for conversion to the target type.
 type diceCand struct {
