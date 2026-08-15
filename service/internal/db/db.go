@@ -343,6 +343,47 @@ func GetByGameID(ctx context.Context, db *sql.DB, gameID string) (*Entry, error)
 	return &e, nil
 }
 
+// EquipmentByAttr returns equipment entries whose attrs JSON has attrPath equal to
+// value, optionally scoped to an edition. Used by the eligibility endpoint to pull
+// rune / material candidates by host (e.g. attrPath "$.rune_host", value "weapon")
+// straight from the index — no full-text search, no per-candidate JSON fetch.
+func EquipmentByAttr(ctx context.Context, db *sql.DB, attrPath, value, edition string) ([]Entry, error) {
+	q := `
+		SELECT id, game_id, aonid, type, name,
+		       current_schema_version, base_path, s3_key,
+		       level, source, source_page, edition,
+		       image_s3_key, attrs, indexed_at
+		FROM entries
+		WHERE type = 'equipment' AND json_extract(attrs, ?) = ?`
+	args := []any{attrPath, value}
+	if edition != "" {
+		q += ` AND edition = ?`
+		args = append(args, edition)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("equipment by attr: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		var attrsStr string
+		if err := rows.Scan(
+			&e.ID, &e.GameID, &e.AonID, &e.Type, &e.Name,
+			&e.CurrentSchemaVersion, &e.BasePath, &e.S3Key,
+			&e.Level, &e.Source, &e.SourcePage, &e.Edition,
+			&e.ImageS3Key, &attrsStr, &e.IndexedAt,
+		); err != nil {
+			return nil, fmt.Errorf("equipment by attr scan: %w", err)
+		}
+		e.Attrs = json.RawMessage(attrsStr)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // GetVersions returns all known schema versions for a game_id.
 func GetVersions(ctx context.Context, db *sql.DB, gameID string) ([]EntryVersion, error) {
 	rows, err := db.QueryContext(ctx, `

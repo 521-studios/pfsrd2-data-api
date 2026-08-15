@@ -22,6 +22,7 @@ import (
 
 	"github.com/521studios/pfsrd2-data-api/internal/db"
 	"github.com/521studios/pfsrd2-data-api/internal/defects"
+	"github.com/521studios/pfsrd2-data-api/internal/eligibility"
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 	"github.com/521studios/pfsrd2-data-api/internal/startup"
 	"github.com/521studios/pfsrd2-data-api/internal/template"
@@ -93,6 +94,7 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/sources", h.sources)
 		r.Get("/entries/{gameID}", h.getEntry)
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
+		r.Get("/entries/{gameID}/eligible", h.getEntryEligible)
 		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
@@ -340,6 +342,67 @@ func (h *handler) getEntry(w http.ResponseWriter, r *http.Request) {
 		"entry":    entry,
 		"versions": versions,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GET /entries/{gameID}/eligible — "what can I apply to this item?"
+// ---------------------------------------------------------------------------
+
+func (h *handler) getEntryEligible(w http.ResponseWriter, r *http.Request) {
+	gameID := chi.URLParam(r, "gameID")
+	entry, err := db.GetByGameID(r.Context(), db.Global(), gameID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if entry == nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+	facts, err := eligibility.FactsFor(entry.Type, entry.Name, entry.Attrs)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	edition := ""
+	if entry.Edition != nil {
+		edition = *entry.Edition
+	}
+
+	resp := eligibility.Response{
+		Item:      eligibility.ItemRef{GameID: entry.GameID, Name: entry.Name, Type: entry.Type, Host: facts.Host},
+		Runes:     eligibility.RuneGroups{Fundamental: []eligibility.RuneCandidate{}, Property: []eligibility.RuneCandidate{}},
+		Materials: []eligibility.MaterialCandidate{},
+		Spells:    eligibility.SpellsFor(entry.Attrs),
+	}
+
+	// Runes + materials only apply to a weapon/armor/shield host; a non-host item
+	// (e.g. a consumable, or a rune itself) still returns its spell slots if any.
+	if facts.Host != "" {
+		runes, err := db.EquipmentByAttr(r.Context(), db.Global(), "$.rune_host", facts.Host, edition)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp.Runes = eligibility.BuildRunes(toCandidates(runes), facts)
+
+		mats, err := db.EquipmentByAttr(r.Context(), db.Global(), "$.material_use_host", facts.Host, edition)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp.Materials = eligibility.BuildMaterials(toCandidates(mats))
+	}
+
+	jsonOK(w, resp)
+}
+
+func toCandidates(entries []db.Entry) []eligibility.Candidate {
+	out := make([]eligibility.Candidate, len(entries))
+	for i, e := range entries {
+		out[i] = eligibility.Candidate{GameID: e.GameID, Name: e.Name, Attrs: e.Attrs}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
