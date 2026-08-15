@@ -50,3 +50,24 @@ func TestAdjustmentMaximumClampsAndSyncsText(t *testing.T) {
 		})
 	}
 }
+
+// The array-element adjustment path honours Maximum per element (a max on an array
+// adjustment must clamp, not be silently ignored).
+func TestAdjustmentMaximumClampsArrayElements(t *testing.T) {
+	max8 := 8.0
+	sb := map[string]any{
+		"offense": map[string]any{"attacks": map[string]any{"bonuses": []any{7.0, 4.0, 1.0}}},
+	}
+	eff := Effect{Operation: "adjustment", Target: "$.offense.attacks.bonuses",
+		Value: float64(3), Maximum: &max8}
+	if err := applyEffectGroup(sb, []Effect{eff}); err != nil {
+		t.Fatalf("applyEffectGroup: %v", err)
+	}
+	got := sb["offense"].(map[string]any)["attacks"].(map[string]any)["bonuses"].([]any)
+	want := []float64{8, 7, 4} // 7+3→10 clamped to 8; 4+3=7; 1+3=4
+	for i, w := range want {
+		if g, _ := toFloat64(got[i]); g != w {
+			t.Errorf("bonuses[%d] = %v, want %v", i, got[i], w)
+		}
+	}
+}
