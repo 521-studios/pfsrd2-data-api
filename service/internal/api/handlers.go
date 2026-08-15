@@ -97,6 +97,9 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
 		r.Get("/entries/{gameID}/eligible", h.getEntryEligible)
 		r.Get("/entries/{itemGameID}/apply/{effectGameID}", h.applyToItem)
+		// POST chains onto the in-progress item in the body (stacking several
+		// modifications); GET always starts from the base S3 item.
+		r.Post("/entries/{itemGameID}/apply/{effectGameID}", h.applyToItemPost)
 		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
@@ -403,29 +406,67 @@ func (h *handler) getEntryEligible(w http.ResponseWriter, r *http.Request) {
 // (itemGameID) and returns the modified item. Every apply is boundary-checked
 // against the eligibility rules — an ineligible apply is refused (409), so the API
 // is the authority. Runes reuse the template engine (patches); materials/spells are
-// direct state changes. GET /entries/{itemGameID}/apply/{effectGameID}?grade=<level>.
+// direct state changes. GET /entries/{itemGameID}/apply/{effectGameID}?grade=<level>
+// starts from the base S3 item; the POST form (applyToItemPost) chains onto an
+// in-progress item supplied in the body.
 func (h *handler) applyToItem(w http.ResponseWriter, r *http.Request) {
-	d := db.Global()
-	itemEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "itemGameID"))
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+	itemEntry, effectEntry, ok := h.loadApplyEntries(w, r)
+	if !ok {
 		return
 	}
-	effectEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "effectGameID"))
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if itemEntry == nil || effectEntry == nil {
-		jsonError(w, "not found", http.StatusNotFound)
-		return
-	}
-
 	itemDoc, err := h.fetchDoc(r, itemEntry.S3Key)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	h.dispatchApply(w, r, itemDoc, itemEntry, effectEntry)
+}
+
+// applyToItemPost chains a modification onto the in-progress item in the request
+// body (so a customize panel can stack potency + striking + property runes +
+// material). Eligibility facts still come from the base item's index entry keyed by
+// {itemGameID} — a rune doesn't change the item's weapon_type/host.
+func (h *handler) applyToItemPost(w http.ResponseWriter, r *http.Request) {
+	itemEntry, effectEntry, ok := h.loadApplyEntries(w, r)
+	if !ok {
+		return
+	}
+	var itemDoc map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&itemDoc); err != nil {
+		jsonError(w, "invalid item body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if itemDoc == nil {
+		jsonError(w, "item body required", http.StatusBadRequest)
+		return
+	}
+	h.dispatchApply(w, r, itemDoc, itemEntry, effectEntry)
+}
+
+// loadApplyEntries resolves the item + effect index entries shared by both apply
+// forms; it writes the 404/500 response and returns ok=false on failure.
+func (h *handler) loadApplyEntries(w http.ResponseWriter, r *http.Request) (item, effect *db.Entry, ok bool) {
+	d := db.Global()
+	itemEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "itemGameID"))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	effectEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "effectGameID"))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	if itemEntry == nil || effectEntry == nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return nil, nil, false
+	}
+	return itemEntry, effectEntry, true
+}
+
+// dispatchApply applies the effect to itemDoc and writes the uniform result. itemDoc
+// is the base S3 item (GET) or the in-progress item from the body (POST).
+func (h *handler) dispatchApply(w http.ResponseWriter, r *http.Request, itemDoc map[string]any, itemEntry, effectEntry *db.Entry) {
 	facts, err := eligibility.FactsFor(itemEntry.Type, itemEntry.Name, itemEntry.Attrs)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)

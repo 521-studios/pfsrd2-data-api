@@ -132,6 +132,70 @@ func TestApplyRune_BoundaryRefusesIneligible(t *testing.T) {
 	}
 }
 
+// The POST form applies to the item in the body, so a customize panel can stack
+// several modifications: each apply chains onto the previous result, not the S3 base.
+func TestApplyToItemPost_ChainsOnBodyItem(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered",
+		`{"weapon_types":["Melee"],"damage_types":["piercing"],"weapon_category":"Martial"}`)
+	insertEntry(t, "pot", "equipment", "Weapon Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"weapon_potency","rune_host":"weapon"}`)
+
+	// An in-progress item: renamed + already Striking'd (dice_count 2). Potency must
+	// land on THIS, leaving the custom name and the earlier dice bump intact.
+	body := `{"name":"Custom Blade","stat_block":{"traits":[],"offense":{"weapon_modes":[
+		{"weapon_type":"Melee","damage":[{"damage_type":"piercing","dice_count":2,"die_size":6,"formula":"2d6"}]}]}}}`
+	req := httptest.NewRequest("POST", "/api/pfsrd2/entries/rap/apply/pot?grade=2", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code %d: %s", w.Code, w.Body)
+	}
+	var res struct {
+		Item    map[string]any `json:"item"`
+		Applied string         `json:"applied"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.Item["name"] != "Custom Blade" {
+		t.Fatalf("name = %v, want the body item preserved (not the S3 base rapier)", res.Item["name"])
+	}
+	dmg := res.Item["stat_block"].(map[string]any)["offense"].(map[string]any)["weapon_modes"].([]any)[0].(map[string]any)["damage"].([]any)[0].(map[string]any)
+	if dmg["dice_count"] != float64(2) {
+		t.Fatalf("dice_count = %v, want 2 (the earlier Striking preserved)", dmg["dice_count"])
+	}
+	if !strings.Contains(w.Body.String(), `"attack"`) {
+		t.Fatalf("potency not applied to the body item: %s", w.Body)
+	}
+}
+
+func TestApplyToItemPost_InvalidBody400(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered", `{"weapon_types":["Melee"]}`)
+	insertEntry(t, "pot", "equipment", "Weapon Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"weapon_potency","rune_host":"weapon"}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/api/pfsrd2/entries/rap/apply/pot", strings.NewReader("{ not json")))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code %d, want 400 on a malformed item body", w.Code)
+	}
+}
+
+func TestApplyToItemPost_BoundaryStillEnforced(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered", `{"weapon_types":["Melee"]}`)
+	insertEntry(t, "arm", "equipment", "Armor Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"armor_potency","rune_host":"armor"}`)
+	body := `{"name":"Custom Blade","stat_block":{"traits":[],"offense":{"weapon_modes":[{"weapon_type":"Melee"}]}}}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/api/pfsrd2/entries/rap/apply/arm", strings.NewReader(body)))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code %d, want 409 (armor rune on a weapon, via POST)", w.Code)
+	}
+}
+
 func TestApplyMaterialAndSpell(t *testing.T) {
 	setupTestDB(t)
 	mock := &mockS3{objects: map[string][]byte{
