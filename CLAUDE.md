@@ -55,6 +55,9 @@ GET /{type}?source=Bestiary&edition=legacy
 GET /{type}/{schema_version}/{book}/{filename}
 GET /entries/{game_id}
 GET /entries/{game_id}/full?version=1.3
+GET /entries/{item_game_id}/eligible                         → grouped runes/materials/spell-holder options for an item
+GET /entries/{item_game_id}/apply/{effect_game_id}?grade=N   → apply a rune/material/spell to the base item → {item, applied, patches}
+POST /entries/{item_game_id}/apply/{effect_game_id}?grade=N  → same, but applies onto the in-progress item in the body (stacking)
 GET /images/{category}/{filename}   → 302 to CloudFront
 GET /db/status
 POST /db/refresh
