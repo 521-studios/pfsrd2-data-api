@@ -626,11 +626,13 @@ func SuggestTraits(ctx context.Context, db *sql.DB, p TraitSuggestParams) ([]str
 
 // Suggestion is a minimal entry for typeahead results.
 type Suggestion struct {
-	GameID     string  `json:"game_id"`
-	Name       string  `json:"name"`
-	Type       string  `json:"type"`
-	Level      *int    `json:"level,omitempty"`
-	ImageS3Key *string `json:"image_s3_key,omitempty"`
+	GameID          string  `json:"game_id"`
+	Name            string  `json:"name"`
+	Type            string  `json:"type"`
+	Level           *int    `json:"level,omitempty"`
+	ImageS3Key      *string `json:"image_s3_key,omitempty"`
+	ItemCategory    *string `json:"item_category,omitempty"`
+	ItemSubcategory *string `json:"item_subcategory,omitempty"`
 }
 
 // SuggestParams for GET /search/suggest.
@@ -677,7 +679,8 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 
 	where := strings.Join(conds, " AND ")
 	sqlQuery := fmt.Sprintf(`
-		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
+		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key,
+		       json_extract(e.attrs,'$.item_category'), json_extract(e.attrs,'$.item_subcategory')
 		FROM entries e
 		WHERE %s
 		ORDER BY e.name ASC
@@ -694,7 +697,7 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 	results := make([]Suggestion, 0, p.Limit)
 	for rows.Next() {
 		var s Suggestion
-		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {
+		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key, &s.ItemCategory, &s.ItemSubcategory); err != nil {
 			return nil, fmt.Errorf("scan suggestion: %w", err)
 		}
 		results = append(results, s)
@@ -770,7 +773,8 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	where := strings.Join(conds, " AND ")
 
 	query := fmt.Sprintf(`
-		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key
+		SELECT e.game_id, e.name, e.type, e.level, e.image_s3_key,
+		       json_extract(e.attrs,'$.item_category'), json_extract(e.attrs,'$.item_subcategory')
 		FROM entries e
 		WHERE %s
 		ORDER BY CASE WHEN LOWER(e.name) LIKE ? THEN 0 ELSE 1 END, e.name ASC
@@ -787,7 +791,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 	results := make([]Suggestion, 0, p.Limit)
 	for rows.Next() {
 		var s Suggestion
-		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key); err != nil {
+		if err := rows.Scan(&s.GameID, &s.Name, &s.Type, &s.Level, &s.ImageS3Key, &s.ItemCategory, &s.ItemSubcategory); err != nil {
 			return nil, fmt.Errorf("scan suggestion: %w", err)
 		}
 		results = append(results, s)
@@ -802,13 +806,15 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 // UnifiedSuggestion is a typeahead result that includes the entry's edition
 // and optionally its cross-edition alternate.
 type UnifiedSuggestion struct {
-	GameID     string             `json:"game_id"`
-	Name       string             `json:"name"`
-	Type       string             `json:"type"`
-	Level      *int               `json:"level,omitempty"`
-	Edition    *string            `json:"edition,omitempty"`
-	ImageS3Key *string            `json:"image_s3_key,omitempty"`
-	Alternate  *UnifiedSuggestion `json:"alternate,omitempty"`
+	GameID          string             `json:"game_id"`
+	Name            string             `json:"name"`
+	Type            string             `json:"type"`
+	Level           *int               `json:"level,omitempty"`
+	Edition         *string            `json:"edition,omitempty"`
+	ImageS3Key      *string            `json:"image_s3_key,omitempty"`
+	ItemCategory    *string            `json:"item_category,omitempty"`    // items only; null for creatures
+	ItemSubcategory *string            `json:"item_subcategory,omitempty"` // as first-class as traits, per-row
+	Alternate       *UnifiedSuggestion `json:"alternate,omitempty"`
 }
 
 // UnifiedSuggestParams for GET /search/suggest/unified.
@@ -864,6 +870,7 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 
 	query := fmt.Sprintf(`
 		SELECT e.game_id, e.name, e.type, e.level, e.edition, e.image_s3_key,
+		       json_extract(e.attrs,'$.item_category'), json_extract(e.attrs,'$.item_subcategory'),
 		       a2.game_id, a2.name, a2.type, a2.level, a2.edition, a2.image_s3_key
 		FROM entries e
 		LEFT JOIN alternates alt ON alt.game_id = e.game_id
@@ -922,6 +929,7 @@ func scanUnifiedRows(rows *sql.Rows) ([]unifiedRawRow, error) {
 
 		if err := rows.Scan(
 			&s.GameID, &s.Name, &s.Type, &s.Level, &s.Edition, &s.ImageS3Key,
+			&s.ItemCategory, &s.ItemSubcategory,
 			&altGameID, &altName, &altType, &altLevel, &altEdition, &altImage,
 		); err != nil {
 			return nil, fmt.Errorf("scan unified suggestion: %w", err)

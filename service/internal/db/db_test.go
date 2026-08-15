@@ -645,6 +645,41 @@ func TestSuggestUnified_TypeFilter(t *testing.T) {
 	}
 }
 
+func TestSuggestUnified_CarriesItemCategory(t *testing.T) {
+	db := testDB(t)
+	// An item row carries item_category/item_subcategory (as first-class as traits).
+	results, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "striking"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var striking *UnifiedSuggestion
+	for i := range results {
+		if results[i].Name == "Striking" {
+			striking = &results[i]
+		}
+	}
+	if striking == nil {
+		t.Fatalf("Striking not in results: %+v", results)
+	}
+	if striking.ItemCategory == nil || *striking.ItemCategory != "Runes" {
+		t.Errorf("item_category = %v, want Runes", striking.ItemCategory)
+	}
+	if striking.ItemSubcategory == nil || *striking.ItemSubcategory != "Fundamental Weapon Runes" {
+		t.Errorf("item_subcategory = %v, want Fundamental Weapon Runes", striking.ItemSubcategory)
+	}
+
+	// A creature has no item_category → nil (omitted from JSON).
+	cres, err := SuggestUnified(context.Background(), db, UnifiedSuggestParams{Q: "dragon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range cres {
+		if s.Type != "equipment" && s.Type != "armor" && s.ItemCategory != nil {
+			t.Errorf("%s (%s) should have nil item_category, got %v", s.Name, s.Type, *s.ItemCategory)
+		}
+	}
+}
+
 func TestSuggestUnified_VersionFilter(t *testing.T) {
 	db := testDB(t)
 	// Young Blue Dragon (Monsters:102) has no 1.2 version
