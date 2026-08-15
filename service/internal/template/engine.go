@@ -662,10 +662,10 @@ func applyAdjustment(statBlock map[string]any, rv ResolvedValue, eff Effect) err
 	return nil
 }
 
-// updateSiblingText updates "text" fields in the parent map and all ancestor
-// maps when a numeric value changes. Walks the statBlock using the target path
-// to find all maps along the resolution chain and replaces the old value in
-// their text fields.
+// updateSiblingText updates display-text fields (see displayTextKeys) in the parent
+// map and all ancestor maps when a numeric value changes. Walks the statBlock using
+// the target path to find all maps along the resolution chain and replaces the old
+// value where it is rendered into text — never in value-as-string fields like hands.
 func updateSiblingText(statBlock map[string]any, target string, rv ResolvedValue, oldVal, newVal float64) {
 	if oldVal == newVal {
 		return
