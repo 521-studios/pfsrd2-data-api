@@ -55,6 +55,7 @@ type Effect struct {
 	Source       string         `json:"source,omitempty"`
 	ValueFrom    string         `json:"value_from,omitempty"`
 	Minimum      *float64       `json:"minimum,omitempty"`
+	Maximum      *float64       `json:"maximum,omitempty"`
 	Selection    map[string]any `json:"selection,omitempty"`
 	MovementType string         `json:"movement_type,omitempty"`
 }
