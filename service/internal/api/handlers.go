@@ -23,6 +23,7 @@ import (
 	"github.com/521studios/pfsrd2-data-api/internal/db"
 	"github.com/521studios/pfsrd2-data-api/internal/defects"
 	"github.com/521studios/pfsrd2-data-api/internal/eligibility"
+	"github.com/521studios/pfsrd2-data-api/internal/itemapply"
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 	"github.com/521studios/pfsrd2-data-api/internal/startup"
 	"github.com/521studios/pfsrd2-data-api/internal/template"
@@ -95,6 +96,7 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/entries/{gameID}", h.getEntry)
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
 		r.Get("/entries/{gameID}/eligible", h.getEntryEligible)
+		r.Get("/entries/{itemGameID}/apply/{effectGameID}", h.applyToItem)
 		r.Get("/images/{category}/{filename}", h.serveImage)
 		r.Get("/db/status", h.dbStatus)
 		r.Post("/db/refresh", h.dbRefresh)
@@ -395,6 +397,128 @@ func (h *handler) getEntryEligible(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, resp)
+}
+
+// applyToItem applies a rune, material, or spell (effectGameID) to an item
+// (itemGameID) and returns the modified item. Every apply is boundary-checked
+// against the eligibility rules — an ineligible apply is refused (409), so the API
+// is the authority. Runes reuse the template engine (patches); materials/spells are
+// direct state changes. GET /entries/{itemGameID}/apply/{effectGameID}?grade=<level>.
+func (h *handler) applyToItem(w http.ResponseWriter, r *http.Request) {
+	d := db.Global()
+	itemEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "itemGameID"))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	effectEntry, err := db.GetByGameID(r.Context(), d, chi.URLParam(r, "effectGameID"))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if itemEntry == nil || effectEntry == nil {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	itemDoc, err := h.fetchDoc(r, itemEntry.S3Key)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	facts, err := eligibility.FactsFor(itemEntry.Type, itemEntry.Name, itemEntry.Attrs)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	switch itemapply.KindOf(effectEntry.Type, effectEntry.Attrs) {
+	case itemapply.KindRune:
+		h.applyRune(w, r, itemDoc, effectEntry, facts)
+	case itemapply.KindMaterial:
+		if err := itemapply.ApplyMaterial(itemDoc, effectEntry.Attrs, facts); err != nil {
+			jsonError(w, err.Error(), http.StatusConflict)
+			return
+		}
+		jsonOK(w, map[string]any{"item": itemDoc, "applied": effectEntry.Name})
+	case itemapply.KindSpell:
+		rank, isCantrip := spellRankAndCantrip(effectEntry)
+		if err := itemapply.ApplySpell(itemDoc, itemEntry.Attrs, effectEntry.Name,
+			int64Deref(effectEntry.AonID), rank, isCantrip); err != nil {
+			jsonError(w, err.Error(), http.StatusConflict)
+			return
+		}
+		jsonOK(w, map[string]any{"item": itemDoc, "applied": effectEntry.Name})
+	default:
+		jsonError(w, "effect is not a rune, material, or spell", http.StatusBadRequest)
+	}
+}
+
+func (h *handler) applyRune(w http.ResponseWriter, r *http.Request, itemDoc map[string]any, rune *db.Entry, facts eligibility.ItemFacts) {
+	// Boundary: the rune must be eligible for this item (the API is the authority).
+	if err := itemapply.CheckRuneBoundary(rune.Attrs, facts); err != nil {
+		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	runeDoc, err := h.fetchDoc(r, rune.S3Key)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	grade, _ := strconv.Atoi(r.URL.Query().Get("grade"))
+	effects, label, err := itemapply.RuneVariantEffects(runeDoc, grade)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	// Seed the modifier arrays the rune targets so the engine appends rather than
+	// no-op'ing on a base item that carries no modifier list.
+	itemapply.EnsureModifierTargets(itemDoc, effects)
+	resp, err := template.Apply(itemDoc, itemapply.AsTemplate(effects, label))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeTemplateResult(w, resp)
+}
+
+// fetchDoc pulls an entry's JSON from S3 and unmarshals it to a map.
+func (h *handler) fetchDoc(r *http.Request, s3Key string) (map[string]any, error) {
+	body, err := h.cfg.S3Client.GetObjectBytes(r.Context(), s3Key)
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("invalid JSON for %s: %w", s3Key, err)
+	}
+	return doc, nil
+}
+
+// spellRankAndCantrip reads a spell entry's rank (its level) and whether it's a
+// cantrip (carries the Cantrip trait).
+func spellRankAndCantrip(e *db.Entry) (int, bool) {
+	rank := 0
+	if e.Level != nil {
+		rank = *e.Level
+	}
+	var a struct {
+		Traits []string `json:"traits"`
+	}
+	_ = json.Unmarshal(e.Attrs, &a)
+	for _, t := range a.Traits {
+		if strings.EqualFold(t, "cantrip") {
+			return rank, true
+		}
+	}
+	return rank, false
+}
+
+func int64Deref(p *int64) int {
+	if p == nil {
+		return 0
+	}
+	return int(*p)
 }
 
 func toCandidates(entries []db.Entry) []eligibility.Candidate {
