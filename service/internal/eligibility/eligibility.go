@@ -10,6 +10,7 @@ package eligibility
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -165,4 +166,47 @@ func oneOrNone(s string) []string {
 		return nil
 	}
 	return []string{s}
+}
+
+// MaterialEligible reports whether a material's use page fits the item — its host
+// must match. The write side (item-apply) shares this with the read-side query so
+// the two can't drift.
+func MaterialEligible(materialAttrs json.RawMessage, f ItemFacts) bool {
+	var m struct {
+		UseHost string `json:"material_use_host"`
+	}
+	if err := json.Unmarshal(materialAttrs, &m); err != nil {
+		return false
+	}
+	return f.Host != "" && m.UseHost == f.Host
+}
+
+// SpellFits reports (nil == fits) whether a spell may be slotted into a holder: the
+// item must be a holder, the spell's rank must not exceed the holder's max_rank, and
+// a cantrip is refused when the holder excludes cantrips. The reason is returned so
+// the API can explain the refusal.
+func SpellFits(holderAttrs json.RawMessage, spellRank int, isCantrip bool) error {
+	var h struct {
+		Holder   string   `json:"spell_holder"`
+		MaxRank  any      `json:"spell_max_rank"`
+		Excluded []string `json:"spell_excluded_types"`
+	}
+	if err := json.Unmarshal(holderAttrs, &h); err != nil {
+		return err
+	}
+	if h.Holder == "" {
+		return fmt.Errorf("this item is not a spell holder")
+	}
+	if isCantrip {
+		for _, e := range h.Excluded {
+			if strings.EqualFold(e, "cantrip") {
+				return fmt.Errorf("this %s cannot hold cantrips", h.Holder)
+			}
+		}
+		return nil // a cantrip has no rank to gate on
+	}
+	if maxRank, ok := h.MaxRank.(float64); ok && spellRank > int(maxRank) {
+		return fmt.Errorf("spell rank %d exceeds this %s's maximum rank %d", spellRank, h.Holder, int(maxRank))
+	}
+	return nil
 }

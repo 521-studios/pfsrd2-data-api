@@ -54,6 +54,21 @@ func TestRuneVariantEffects_SelectsGradeAndNormalizesTarget(t *testing.T) {
 	}
 }
 
+func TestRuneVariantEffects_PropertyRuneNoEffects(t *testing.T) {
+	// A property rune carries its mechanics as prose — the selected variant has no
+	// executable effects. That's a 422 (handled), not a panic or empty apply.
+	doc := map[string]any{"stat_block": map[string]any{"variants": []any{
+		map[string]any{"level": float64(4), "name": "Flaming"}, // no "effects" key
+	}}}
+	if _, _, err := RuneVariantEffects(doc, 4); err == nil {
+		t.Error("an effect-less property rune must error, not apply nothing")
+	}
+	// A rune doc with no stat_block at all also errors rather than panicking.
+	if _, _, err := RuneVariantEffects(map[string]any{}, 0); err == nil {
+		t.Error("a rune with no stat_block must error")
+	}
+}
+
 func TestApplyMaterial_TraitsAndRarity(t *testing.T) {
 	item := map[string]any{"stat_block": map[string]any{"traits": []any{
 		map[string]any{"name": "Magical"}, map[string]any{"name": "Uncommon"},
@@ -80,6 +95,32 @@ func TestApplyMaterial_TraitsAndRarity(t *testing.T) {
 	if err := ApplyMaterial(item, json.RawMessage(`{"material_use_host":"armor"}`),
 		eligibility.ItemFacts{Host: "weapon"}); err == nil {
 		t.Error("armor material on a weapon should be refused")
+	}
+}
+
+func TestApplyMaterial_NoFabricatedCommonRarity(t *testing.T) {
+	facts := eligibility.ItemFacts{Host: "weapon"}
+	// A common item (no explicit rarity trait) + a material granting no rarity must
+	// NOT gain a fabricated "Common" trait.
+	item := map[string]any{"stat_block": map[string]any{"traits": []any{map[string]any{"name": "Versatile"}}}}
+	if err := ApplyMaterial(item, json.RawMessage(`{"material_use_host":"weapon","material_grants_traits":["Silver"]}`), facts); err != nil {
+		t.Fatal(err)
+	}
+	n := traitNames(item)
+	if n["Common"] {
+		t.Errorf("must not fabricate a Common rarity trait: %v", n)
+	}
+	if !n["Silver"] || !n["Versatile"] {
+		t.Errorf("expected Versatile + Silver: %v", n)
+	}
+
+	// A common item + a material granting Rare DOES gain the Rare rarity.
+	item2 := map[string]any{"stat_block": map[string]any{"traits": []any{}}}
+	if err := ApplyMaterial(item2, json.RawMessage(`{"material_use_host":"weapon","material_grants_traits":["Rare"]}`), facts); err != nil {
+		t.Fatal(err)
+	}
+	if !traitNames(item2)["Rare"] {
+		t.Error("a granted rarity should be applied even when the item had none")
 	}
 }
 

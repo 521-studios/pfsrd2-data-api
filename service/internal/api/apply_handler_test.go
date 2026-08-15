@@ -2,9 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,10 +51,67 @@ func TestApplyRuneToItem(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code %d: %s", w.Code, w.Body)
 	}
-	patches := readPatchesPart(t, w)
+	// Uniform JSON contract {item, applied, patches} for every effect kind.
+	body := w.Body.String()
+	if !strings.Contains(body, `"applied":"Weapon Potency (+1)"`) {
+		t.Fatalf("missing applied label: %s", body)
+	}
 	// The engine emitted an add op that puts an item attack modifier on the strike.
-	if !strings.Contains(patches, `"add"`) || !strings.Contains(patches, `"attack"`) || !strings.Contains(patches, "modifiers") {
-		t.Fatalf("expected an add-modifier patch, got: %s", patches)
+	if !strings.Contains(body, `"add"`) || !strings.Contains(body, `"attack"`) || !strings.Contains(body, "modifiers") {
+		t.Fatalf("expected an add-modifier patch, got: %s", body)
+	}
+}
+
+func TestApplyRune_NoMatchingGrade422(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered",
+		`{"weapon_types":["Melee"],"damage_types":["piercing"],"weapon_category":"Martial"}`)
+	insertEntry(t, "pot", "equipment", "Weapon Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"weapon_potency","rune_host":"weapon"}`)
+	// potencyJSON only has a level-2 grade; asking for grade 7 must not silently
+	// downgrade — it's a 422.
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/entries/rap/apply/pot?grade=7", nil))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code %d, want 422 for a non-existent grade", w.Code)
+	}
+}
+
+func TestApply_S3Error(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(&errS3{}) // every S3 fetch fails
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered",
+		`{"weapon_types":["Melee"]}`)
+	insertEntry(t, "pot", "equipment", "Weapon Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"weapon_potency","rune_host":"weapon"}`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/entries/rap/apply/pot", nil))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("code %d, want 502 on an S3 fetch failure", w.Code)
+	}
+}
+
+func TestApply_NotFoundAndUnknownKind(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered",
+		`{"weapon_types":["Melee"]}`)
+
+	// A missing effect game_id → 404.
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/entries/rap/apply/nope", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing effect: code %d, want 404", w.Code)
+	}
+
+	// A plain equipment entry (not a rune/material/spell) → 400.
+	insertEntry(t, "plain", "equipment", "Backpack", "json/equipment/1.3/b/x.json", "remastered",
+		`{"item_category":"Adventuring Gear"}`)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/entries/rap/apply/plain", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown effect kind: code %d, want 400", w.Code)
 	}
 }
 
@@ -131,22 +185,4 @@ func insertSpell(t *testing.T, gameID, name, level, attrs string) {
 		gameID, "spells", name, "1.3", "spells/b/x.json", "json/spells/1.3/b/x.json", level, "remastered", attrs); err != nil {
 		t.Fatalf("insert spell %s: %v", gameID, err)
 	}
-}
-
-func readPatchesPart(t *testing.T, w *httptest.ResponseRecorder) string {
-	t.Helper()
-	_, params, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
-	if err != nil {
-		t.Fatalf("content-type: %v (%q)", err, w.Header().Get("Content-Type"))
-	}
-	mr := multipart.NewReader(w.Body, params["boundary"])
-	part, err := mr.NextPart()
-	if err != nil {
-		t.Fatalf("first part: %v", err)
-	}
-	b, err := io.ReadAll(part)
-	if err != nil {
-		t.Fatalf("read part: %v", err)
-	}
-	return string(b)
 }

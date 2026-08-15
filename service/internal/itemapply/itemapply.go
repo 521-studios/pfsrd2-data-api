@@ -1,20 +1,27 @@
 // Package itemapply applies a rune, material, or spell to an item and returns the
 // modified item — the write side of "what can I apply to this?". Rune effects reuse
 // the template engine (they share its effect vocabulary); materials and spells are
-// non-engine state changes. Every apply is boundary-checked against the same
-// eligibility rules the read side uses, so the API is the single authority: an
-// ineligible apply is refused, not silently performed. Pure/testable; the handler
-// wires the DB + S3 fetches.
+// non-engine state changes. Every apply is boundary-checked through the eligibility
+// package (RuneEligible / MaterialEligible / SpellFits) — the same predicates as the
+// read side, so the two can't drift and the API is the single authority: an ineligible
+// apply is refused, not silently performed. Pure/testable; the handler wires the DB +
+// S3 fetches.
 package itemapply
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/521studios/pfsrd2-data-api/internal/eligibility"
 	"github.com/521studios/pfsrd2-data-api/internal/template"
 )
+
+// ErrIneligible wraps a boundary refusal (the effect can't legally apply to the
+// item) so the handler maps it to 409 Conflict, distinct from a 500 data-integrity
+// error like a malformed document.
+var ErrIneligible = errors.New("ineligible")
 
 // Kind classifies the thing being applied, derived from the effect entry.
 type Kind int
@@ -67,9 +74,12 @@ func RuneVariantEffects(runeDoc map[string]any, grade int) ([]template.Effect, s
 	if sb == nil {
 		return nil, "", fmt.Errorf("rune has no stat_block")
 	}
-	rawEffects, label := selectVariantEffects(sb, grade)
+	rawEffects, label, err := selectVariantEffects(sb, grade)
+	if err != nil {
+		return nil, "", err
+	}
 	if rawEffects == nil {
-		return nil, "", fmt.Errorf("rune grade %d has no effects (property runes carry their mechanics as prose)", grade)
+		return nil, "", fmt.Errorf("this rune grade carries no effects (property runes carry their mechanics as prose)")
 	}
 	effs, err := decodeEffects(rawEffects)
 	if err != nil {
@@ -81,27 +91,28 @@ func RuneVariantEffects(runeDoc map[string]any, grade int) ([]template.Effect, s
 	return effs, label, nil
 }
 
-func selectVariantEffects(sb map[string]any, grade int) (any, string) {
+// selectVariantEffects picks a graded rune's variant. grade<=0 means "unspecified"
+// and takes the first (lowest) grade; an explicit grade that matches no variant is an
+// error rather than a silent downgrade.
+func selectVariantEffects(sb map[string]any, grade int) (any, string, error) {
 	variants, _ := sb["variants"].([]any)
 	if len(variants) == 0 {
-		return sb["effects"], "" // ungraded rune
+		return sb["effects"], "", nil // ungraded rune
 	}
-	var chosen map[string]any
-	for _, v := range variants {
-		vm, ok := v.(map[string]any)
-		if !ok {
-			continue
+	if grade > 0 {
+		for _, v := range variants {
+			if vm, ok := v.(map[string]any); ok {
+				if lvl, ok := vm["level"].(float64); ok && int(lvl) == grade {
+					label, _ := vm["name"].(string)
+					return vm["effects"], label, nil
+				}
+			}
 		}
-		if lvl, ok := vm["level"].(float64); ok && int(lvl) == grade {
-			chosen = vm
-			break
-		}
+		return nil, "", fmt.Errorf("this rune has no grade at level %d", grade)
 	}
-	if chosen == nil { // grade unspecified/unmatched → the first (lowest) grade
-		chosen, _ = variants[0].(map[string]any)
-	}
-	label, _ := chosen["name"].(string)
-	return chosen["effects"], label
+	first, _ := variants[0].(map[string]any) // unspecified → first (lowest) grade
+	label, _ := first["name"].(string)
+	return first["effects"], label, nil
 }
 
 func decodeEffects(raw any) ([]template.Effect, error) {
@@ -206,7 +217,7 @@ func CheckRuneBoundary(runeAttrs json.RawMessage, facts eligibility.ItemFacts) e
 		return err
 	}
 	if !eligibility.RuneEligible(ri, facts) {
-		return fmt.Errorf("this rune is not eligible for this item")
+		return fmt.Errorf("%w: this rune is not eligible for this item", ErrIneligible)
 	}
 	return nil
 }
