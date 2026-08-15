@@ -644,14 +644,16 @@ func applyAdjustment(statBlock map[string]any, rv ResolvedValue, eff Effect) err
 	current := rv.Get()
 	switch val := current.(type) {
 	case float64:
-		newVal := val + adj
+		// Maximum caps the adjusted result (reinforcing-rune caps ship as a
+		// `maximum` on the effect); the sibling text syncs to the clamped value.
+		newVal := applyMaximum(val+adj, eff.Maximum)
 		rv.Set(newVal)
 		updateSiblingText(statBlock, eff.Target, rv, val, newVal)
 	case []any:
 		// Array of numbers (e.g., bonuses [29, 24, 19])
 		for i, elem := range val {
 			if num, ok := toFloat64(elem); ok {
-				val[i] = num + adj
+				val[i] = applyMaximum(num+adj, eff.Maximum)
 			}
 		}
 	default:

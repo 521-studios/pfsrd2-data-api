@@ -98,6 +98,16 @@ func applyMinimum(v float64, minimum *float64) float64 {
 	return v
 }
 
+// applyMaximum clamps a numeric result down to the effect's maximum. Mirrors
+// applyMinimum; used by the adjustment operation for reinforcing-rune caps
+// (e.g. "Hardness increases by 3" capped at 8).
+func applyMaximum(v float64, maximum *float64) float64 {
+	if maximum != nil && v > *maximum {
+		return *maximum
+	}
+	return v
+}
+
 func evaluateAggregateOp(statBlock map[string]any, path, op string) (float64, error) {
 	switch op {
 	case "max":
