@@ -431,8 +431,10 @@ func (h *handler) applyToItemPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// An item doc is small; cap the body so a runaway/hostile payload can't be read
+	// unbounded into memory (an oversized body then fails the decode → 400).
 	var itemDoc map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&itemDoc); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&itemDoc); err != nil {
 		jsonError(w, "invalid item body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

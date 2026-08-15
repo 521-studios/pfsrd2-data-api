@@ -182,6 +182,21 @@ func TestApplyToItemPost_InvalidBody400(t *testing.T) {
 	}
 }
 
+func TestApplyToItemPost_NullBody400(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouterWithS3(applyMock())
+	insertEntry(t, "rap", "weapons", "Rapier", "json/weapons/1.3/b/rapier.json", "remastered", `{"weapon_types":["Melee"]}`)
+	insertEntry(t, "pot", "equipment", "Weapon Potency", "json/equipment/1.3/b/potency.json", "remastered",
+		`{"rune_form":"fundamental","rune_slot":"weapon_potency","rune_host":"weapon"}`)
+	// Valid JSON `null` decodes to a nil map — the "item body required" guard, distinct
+	// from the malformed-JSON branch above.
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/api/pfsrd2/entries/rap/apply/pot", strings.NewReader("null")))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code %d, want 400 on a null item body", w.Code)
+	}
+}
+
 func TestApplyToItemPost_BoundaryStillEnforced(t *testing.T) {
 	setupTestDB(t)
 	r := newTestRouterWithS3(applyMock())
