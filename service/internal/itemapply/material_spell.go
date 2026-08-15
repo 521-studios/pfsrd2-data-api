@@ -20,10 +20,15 @@ func isRarity(name string) bool {
 // ApplyMaterial makes the item out of a precious material: it gains the material's
 // granted traits (except `precious`, which classifies the material itself), and its
 // rarity becomes the more restrictive of its own and the material's. Boundary
-// (eligibility.MaterialEligible): the material must have a use page for this host.
-// Mutates itemDoc in place.
+// (eligibility.MaterialEligible): the material must have a use page for this host — a
+// mismatch is ErrIneligible (→ 409); a malformed material blob is a data-integrity
+// error (→ 500). Mutates itemDoc in place.
 func ApplyMaterial(itemDoc map[string]any, materialAttrs json.RawMessage, facts eligibility.ItemFacts) error {
-	if !eligibility.MaterialEligible(materialAttrs, facts) {
+	ok, err := eligibility.MaterialEligible(materialAttrs, facts)
+	if err != nil {
+		return fmt.Errorf("material attrs: %w", err) // corrupt data, not a client refusal
+	}
+	if !ok {
 		return fmt.Errorf("%w: this material cannot be made into this item", ErrIneligible)
 	}
 	var m struct {
@@ -95,8 +100,10 @@ func capitalize(s string) string {
 // boundary (eligibility.SpellFits) passes: holder, rank, and cantrip-exclusion.
 // Mutates holderDoc in place.
 func ApplySpell(holderDoc map[string]any, holderAttrs json.RawMessage, spellName string, spellAonID, spellRank int, spellIsCantrip bool) error {
+	// SpellFits already classifies its errors: boundary refusals wrap ErrIneligible
+	// (→ 409), a malformed holder blob is returned bare (→ 500).
 	if err := eligibility.SpellFits(holderAttrs, spellRank, spellIsCantrip); err != nil {
-		return fmt.Errorf("%w: %s", ErrIneligible, err)
+		return err
 	}
 	sb, ok := holderDoc["stat_block"].(map[string]any)
 	if !ok {

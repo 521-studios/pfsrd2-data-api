@@ -2,15 +2,15 @@
 // modified item — the write side of "what can I apply to this?". Rune effects reuse
 // the template engine (they share its effect vocabulary); materials and spells are
 // non-engine state changes. Every apply is boundary-checked through the eligibility
-// package (RuneEligible / MaterialEligible / SpellFits) — the same predicates as the
-// read side, so the two can't drift and the API is the single authority: an ineligible
-// apply is refused, not silently performed. Pure/testable; the handler wires the DB +
-// S3 fetches.
+// package: runes reuse RuneEligible (the exact predicate the read side's BuildRunes
+// uses, so they can't drift); materials and spells enforce their host/rank/cantrip
+// boundaries via MaterialEligible / SpellFits at apply time. So the API is the single
+// authority: an ineligible apply is refused (ErrIneligible → 409), not silently
+// performed. Pure/testable; the handler wires the DB + S3 fetches.
 package itemapply
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -20,8 +20,9 @@ import (
 
 // ErrIneligible wraps a boundary refusal (the effect can't legally apply to the
 // item) so the handler maps it to 409 Conflict, distinct from a 500 data-integrity
-// error like a malformed document.
-var ErrIneligible = errors.New("ineligible")
+// error like a malformed document. It is the eligibility package's sentinel, so a
+// refusal from either the boundary predicates or this package compares equal.
+var ErrIneligible = eligibility.ErrIneligible
 
 // Kind classifies the thing being applied, derived from the effect entry.
 type Kind int

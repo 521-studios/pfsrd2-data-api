@@ -176,6 +176,15 @@ func TestApplyMaterialAndSpell(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("over-rank spell %d, want 409", w.Code)
 	}
+
+	// A cantrip (rank 0, Cantrip trait) exercises spellRankAndCantrip's derivation
+	// loop and the wand's cantrip exclusion → 409.
+	insertSpell(t, "light", "Light", `0`, `{"traits":["Cantrip","Concentrate"]}`)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/entries/wand/apply/light", nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("cantrip on a cantrip-excluding wand %d, want 409", w.Code)
+	}
 }
 
 func insertSpell(t *testing.T, gameID, name, level, attrs string) {

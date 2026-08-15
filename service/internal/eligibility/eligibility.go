@@ -10,6 +10,7 @@ package eligibility
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -168,23 +169,32 @@ func oneOrNone(s string) []string {
 	return []string{s}
 }
 
+// ErrIneligible marks a genuine boundary refusal (the effect can't legally apply),
+// as opposed to a data-integrity failure (malformed attrs on our own index). The
+// apply layer re-exports this so the handler maps a refusal to 409 and everything
+// else to 500 — a parse error on our own data must never masquerade as a client 409.
+var ErrIneligible = errors.New("ineligible")
+
 // MaterialEligible reports whether a material's use page fits the item — its host
-// must match. The write side (item-apply) shares this with the read-side query so
-// the two can't drift.
-func MaterialEligible(materialAttrs json.RawMessage, f ItemFacts) bool {
+// must match. It is enforced on the write side (item-apply); the read side applies
+// the same host rule through its DB query scoping. A malformed attrs blob is a
+// data-integrity error, distinct from a clean "doesn't fit" (false, nil).
+func MaterialEligible(materialAttrs json.RawMessage, f ItemFacts) (bool, error) {
 	var m struct {
 		UseHost string `json:"material_use_host"`
 	}
 	if err := json.Unmarshal(materialAttrs, &m); err != nil {
-		return false
+		return false, err
 	}
-	return f.Host != "" && m.UseHost == f.Host
+	return f.Host != "" && m.UseHost == f.Host, nil
 }
 
 // SpellFits reports (nil == fits) whether a spell may be slotted into a holder: the
 // item must be a holder, the spell's rank must not exceed the holder's max_rank, and
-// a cantrip is refused when the holder excludes cantrips. The reason is returned so
-// the API can explain the refusal.
+// a cantrip is refused when the holder excludes cantrips. Boundary refusals wrap
+// ErrIneligible (→ 409) and carry the reason; a malformed-attrs failure is returned
+// bare (→ 500) so corrupt index data isn't reported as a client conflict. Enforced on
+// the write side; the read side exposes the same constraints via SpellsFor.
 func SpellFits(holderAttrs json.RawMessage, spellRank int, isCantrip bool) error {
 	var h struct {
 		Holder   string   `json:"spell_holder"`
@@ -192,21 +202,27 @@ func SpellFits(holderAttrs json.RawMessage, spellRank int, isCantrip bool) error
 		Excluded []string `json:"spell_excluded_types"`
 	}
 	if err := json.Unmarshal(holderAttrs, &h); err != nil {
-		return err
+		return fmt.Errorf("holder attrs: %w", err)
 	}
 	if h.Holder == "" {
-		return fmt.Errorf("this item is not a spell holder")
+		return fmt.Errorf("%w: this item is not a spell holder", ErrIneligible)
 	}
 	if isCantrip {
 		for _, e := range h.Excluded {
 			if strings.EqualFold(e, "cantrip") {
-				return fmt.Errorf("this %s cannot hold cantrips", h.Holder)
+				return fmt.Errorf("%w: this %s cannot hold cantrips", ErrIneligible, h.Holder)
 			}
 		}
 		return nil // a cantrip has no rank to gate on
 	}
+	// The indexer stores spell_max_rank as an int OR the literal "cantrip" (a
+	// cantrip-only holder), deliberately un-coerced. A non-cantrip spell (we're past
+	// the isCantrip return) can never fit a cantrip-only holder.
+	if s, ok := h.MaxRank.(string); ok && strings.EqualFold(s, "cantrip") {
+		return fmt.Errorf("%w: this %s holds only cantrips", ErrIneligible, h.Holder)
+	}
 	if maxRank, ok := h.MaxRank.(float64); ok && spellRank > int(maxRank) {
-		return fmt.Errorf("spell rank %d exceeds this %s's maximum rank %d", spellRank, h.Holder, int(maxRank))
+		return fmt.Errorf("%w: spell rank %d exceeds this %s's maximum rank %d", ErrIneligible, spellRank, h.Holder, int(maxRank))
 	}
 	return nil
 }

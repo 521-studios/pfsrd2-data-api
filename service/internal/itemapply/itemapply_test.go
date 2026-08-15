@@ -2,6 +2,7 @@ package itemapply
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/521studios/pfsrd2-data-api/internal/eligibility"
@@ -69,6 +70,22 @@ func TestRuneVariantEffects_PropertyRuneNoEffects(t *testing.T) {
 	}
 }
 
+func TestRuneVariantEffects_UngradedRune(t *testing.T) {
+	// A rune with no variants array carries its effects directly on stat_block.effects.
+	doc := map[string]any{"stat_block": map[string]any{"effects": []any{
+		map[string]any{"operation": "add_modifier",
+			"target":   "$.stat_block.defense.modifiers",
+			"modifier": map[string]any{"bonus_value": float64(1)}},
+	}}}
+	effs, _, err := RuneVariantEffects(doc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(effs) != 1 || effs[0].Target != "$.defense.modifiers" {
+		t.Fatalf("ungraded effects not returned/normalized: %+v", effs)
+	}
+}
+
 func TestApplyMaterial_TraitsAndRarity(t *testing.T) {
 	item := map[string]any{"stat_block": map[string]any{"traits": []any{
 		map[string]any{"name": "Magical"}, map[string]any{"name": "Uncommon"},
@@ -124,6 +141,30 @@ func TestApplyMaterial_NoFabricatedCommonRarity(t *testing.T) {
 	}
 }
 
+func TestApply_MalformedAttrsIsNotIneligible(t *testing.T) {
+	// A parse failure on our own index attrs is a data-integrity error (→ 500), never
+	// a boundary refusal (→ 409) — the two must stay distinguishable.
+	facts := eligibility.ItemFacts{Host: "weapon"}
+	item := map[string]any{"stat_block": map[string]any{"traits": []any{}}}
+	if err := ApplyMaterial(item, json.RawMessage(`{ not json`), facts); err == nil {
+		t.Fatal("malformed material attrs should error")
+	} else if errors.Is(err, ErrIneligible) {
+		t.Error("malformed material attrs must NOT be classified as ineligible (409)")
+	}
+
+	holder := map[string]any{"stat_block": map[string]any{"spell_slots": map[string]any{"holder": "wand"}}}
+	if err := ApplySpell(holder, json.RawMessage(`{ not json`), "Fireball", 0, 5, false); err == nil {
+		t.Fatal("malformed holder attrs should error")
+	} else if errors.Is(err, ErrIneligible) {
+		t.Error("malformed holder attrs must NOT be classified as ineligible (409)")
+	}
+
+	// A genuine boundary miss IS ineligible.
+	if err := ApplySpell(holder, json.RawMessage(`{"spell_holder":"wand","spell_max_rank":3}`), "Wish", 0, 9, false); !errors.Is(err, ErrIneligible) {
+		t.Errorf("over-rank spell should be ErrIneligible, got %v", err)
+	}
+}
+
 func TestApplySpell_Boundaries(t *testing.T) {
 	wand := json.RawMessage(`{"spell_holder":"wand","spell_max_rank":9,"spell_excluded_types":["cantrip","focus","ritual"]}`)
 	newHolder := func() map[string]any {
@@ -151,6 +192,16 @@ func TestApplySpell_Boundaries(t *testing.T) {
 	// Not a holder → refused.
 	if err := ApplySpell(newHolder(), json.RawMessage(`{}`), "Light", 0, 1, false); err == nil {
 		t.Error("a non-holder should be refused")
+	}
+
+	// A cantrip-only holder (spell_max_rank: "cantrip", stored un-coerced) must refuse
+	// a ranked non-cantrip spell — the string max_rank must not skip the rank gate.
+	cantripOnly := json.RawMessage(`{"spell_holder":"scroll","spell_max_rank":"cantrip"}`)
+	if err := ApplySpell(newHolder(), cantripOnly, "Fireball", 0, 5, false); !errors.Is(err, ErrIneligible) {
+		t.Errorf("rank-5 spell into a cantrip-only holder should be ErrIneligible, got %v", err)
+	}
+	if err := ApplySpell(newHolder(), cantripOnly, "Light", 0, 0, true); err != nil {
+		t.Errorf("a cantrip should fit a cantrip-only holder, got %v", err)
 	}
 }
 
