@@ -102,6 +102,9 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 		{"Equipment:901", "equipment", "Frost", "1.0", "equipment/rune/frost.json", "json/equipment/1.0/rune/frost.json", 8, "Player Core", "remastered", nil},
 		{"Equipment:902", "equipment", "Healing Potion", "1.0", "equipment/consumable/healing_potion.json", "json/equipment/1.0/consumable/healing_potion.json", 1, "Player Core", "remastered", nil},
 		{"Armor:903", "armor", "Leather Armor", "1.0", "armor/base/leather_armor.json", "json/armor/1.0/base/leather_armor.json", 0, "Player Core", "remastered", nil},
+		// Hazards — carry complexity in attrs (Simple|Complex), the hazard analogue of item_category.
+		{"Hazards:800", "hazards", "Spectral Trap", "1.0", "hazards/gmg/spectral_trap.json", "json/hazards/1.0/gmg/spectral_trap.json", 2, "Gamemastery Guide", "remastered", nil},
+		{"Hazards:801", "hazards", "Clockwork Trap", "1.0", "hazards/gmg/clockwork_trap.json", "json/hazards/1.0/gmg/clockwork_trap.json", 2, "Gamemastery Guide", "remastered", nil},
 	}
 
 	for _, e := range entries {
@@ -136,6 +139,16 @@ func seedFixtures(t *testing.T, db *sql.DB) {
 	for gameID, attrs := range itemAttrs {
 		if _, err := db.Exec(`UPDATE entries SET attrs = ? WHERE game_id = ?`, attrs, gameID); err != nil {
 			t.Fatalf("update item attrs %s: %v", gameID, err)
+		}
+	}
+	// Hazard attrs — complexity (Simple|Complex), filterable like item_category.
+	hazardAttrs := map[string]string{
+		"Hazards:800": `{"complexity":"Simple","traits":["Trap"]}`,
+		"Hazards:801": `{"complexity":"Complex","traits":["Trap","Mechanical"]}`,
+	}
+	for gameID, attrs := range hazardAttrs {
+		if _, err := db.Exec(`UPDATE entries SET attrs = ? WHERE game_id = ?`, attrs, gameID); err != nil {
+			t.Fatalf("update hazard attrs %s: %v", gameID, err)
 		}
 	}
 
@@ -760,8 +773,8 @@ func TestSearch_NoFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Total != 16 {
-		t.Errorf("expected 16 total entries, got %d", result.Total)
+	if result.Total != 18 {
+		t.Errorf("expected 18 total entries, got %d", result.Total)
 	}
 }
 
@@ -889,9 +902,9 @@ func TestSearch_DefaultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Default limit is 20, we have 16 entries
-	if len(result.Results) != 16 {
-		t.Errorf("expected all 16 entries with default limit, got %d", len(result.Results))
+	// Default limit is 20, we have 18 entries
+	if len(result.Results) != 18 {
+		t.Errorf("expected all 18 entries with default limit, got %d", len(result.Results))
 	}
 }
 
@@ -984,8 +997,8 @@ func TestTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(types) != 5 {
-		t.Fatalf("expected 5 types (armor, equipment, monsters, npcs, spells), got %d", len(types))
+	if len(types) != 6 {
+		t.Fatalf("expected 6 types (armor, equipment, hazards, monsters, npcs, spells), got %d", len(types))
 	}
 	typeMap := map[string]int{}
 	for _, tc := range types {
@@ -1193,6 +1206,37 @@ func TestSuggest_CategoryFilter(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Errorf("want no results for Frost filtered to Armor, got %v", none)
+	}
+}
+
+func TestSuggest_ComplexityFilter(t *testing.T) {
+	db := testDB(t)
+	// Both hazards match "trap"; the complexity filter must split them.
+	simple, err := Suggest(context.Background(), db, SuggestParams{Q: "trap", Complexity: "Simple"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(simple) != 1 || simple[0].Name != "Spectral Trap" {
+		t.Errorf("want [Spectral Trap] for Simple, got %v", simple)
+	}
+	complex, err := Suggest(context.Background(), db, SuggestParams{Q: "trap", Complexity: "Complex"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(complex) != 1 || complex[0].Name != "Clockwork Trap" {
+		t.Errorf("want [Clockwork Trap] for Complex, got %v", complex)
+	}
+}
+
+func TestSearch_ComplexityFilter(t *testing.T) {
+	db := testDB(t)
+	// Filter-only (no q): "Simple hazards of level 2" — complexity + level together.
+	res, err := Search(context.Background(), db, SearchParams{Type: "hazards", Complexity: "Simple", Level: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Total != 1 || len(res.Results) != 1 || res.Results[0].Name != "Spectral Trap" {
+		t.Errorf("want [Spectral Trap], got total=%d %v", res.Total, res.Results)
 	}
 }
 
