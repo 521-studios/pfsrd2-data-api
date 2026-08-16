@@ -65,3 +65,29 @@ func TestBuildRunes_ParsesGradePriceToCp(t *testing.T) {
 		t.Errorf("grade[0].Price = %q, want '65 gp'", grades[0].Price)
 	}
 }
+
+// The index's price_cp is authoritative: when the parser emits rune_grades[].price_cp,
+// BuildRunes must serve THAT value, not re-derive it from the display string. A grade
+// whose indexed price_cp deliberately disagrees with priceToCp(Price) proves which one
+// wins; a grade with no indexed price_cp falls back to parsing the string (back-compat).
+func TestBuildRunes_PrefersIndexedPriceCp(t *testing.T) {
+	lvl := func(n int) *int { return &n }
+	cp := func(n int) *int { return &n }
+	rune := RuneInfo{Form: "fundamental", Slot: "striking", Host: "weapon", Grades: []Grade{
+		{Level: lvl(4), Price: "65 gp", PriceCp: cp(7000)}, // indexed 7000 ≠ priceToCp("65 gp")=6500
+		{Level: lvl(12), Price: "1,065 gp"},                // no indexed value → fall back to 106500
+	}}
+	attrs, _ := json.Marshal(rune)
+	f := ItemFacts{WeaponTypes: []string{"Melee"}, Host: "weapon"}
+	g := BuildRunes([]Candidate{{GameID: "r1", Name: "Striking", Attrs: attrs}}, f)
+	if len(g.Fundamental) != 1 {
+		t.Fatalf("want 1 fundamental rune, got %d", len(g.Fundamental))
+	}
+	grades := g.Fundamental[0].Grades
+	if grades[0].PriceCp == nil || *grades[0].PriceCp != 7000 {
+		t.Errorf("grade[0].PriceCp = %v, want 7000 (indexed value, not re-derived 6500)", deref(grades[0].PriceCp))
+	}
+	if grades[1].PriceCp == nil || *grades[1].PriceCp != 106500 {
+		t.Errorf("grade[1].PriceCp = %v, want 106500 (fallback string parse)", deref(grades[1].PriceCp))
+	}
+}

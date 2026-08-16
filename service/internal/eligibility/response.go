@@ -83,11 +83,16 @@ func BuildRunes(candidates []Candidate, f ItemFacts) RuneGroups {
 		if !RuneEligible(r, f) {
 			continue
 		}
-		// Parse each grade's display price to copper so the consumer can sum a composed
-		// item's total (base + runes) numerically. Left absent when it isn't a plain amount.
+		// Copper price for each grade, so the consumer can sum a composed item's total
+		// (base + runes) numerically. The index is authoritative: honor the price_cp the
+		// parser emitted (rune_grades[].price_cp) and only fall back to parsing the display
+		// string when the index didn't supply one (pre-price_cp entries, or a grade the
+		// parser couldn't price). Left absent when neither yields a plain amount.
 		grades := make([]Grade, len(r.Grades))
 		for i, g := range r.Grades {
-			g.PriceCp = priceToCp(g.Price)
+			if g.PriceCp == nil {
+				g.PriceCp = priceToCp(g.Price)
+			}
 			grades[i] = g
 		}
 		rc := RuneCandidate{GameID: c.GameID, Name: c.Name, Slot: r.Slot, Grades: grades}
