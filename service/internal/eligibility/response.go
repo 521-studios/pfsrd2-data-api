@@ -83,7 +83,14 @@ func BuildRunes(candidates []Candidate, f ItemFacts) RuneGroups {
 		if !RuneEligible(r, f) {
 			continue
 		}
-		rc := RuneCandidate{GameID: c.GameID, Name: c.Name, Slot: r.Slot, Grades: r.Grades}
+		// Parse each grade's display price to copper so the consumer can sum a composed
+		// item's total (base + runes) numerically. Left absent when it isn't a plain amount.
+		grades := make([]Grade, len(r.Grades))
+		for i, g := range r.Grades {
+			g.PriceCp = priceToCp(g.Price)
+			grades[i] = g
+		}
+		rc := RuneCandidate{GameID: c.GameID, Name: c.Name, Slot: r.Slot, Grades: grades}
 		if r.Form == "property" {
 			groups.Property = append(groups.Property, rc)
 		} else {
