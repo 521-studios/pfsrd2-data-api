@@ -283,3 +283,57 @@ func TestAverageDamage(t *testing.T) {
 		}
 	}
 }
+
+// o9hy: add_item to $.offense.offensive_actions[*].attack.traits must reach every
+// strike, not just the ones that already carry a traits array. Before the fix,
+// applyWildcardEffects only created/resolved the leaf when NO element resolved, so on
+// a creature whose strikes are mixed (some have attack.traits, some don't) the add
+// landed only on the ones that already had the array. This is the ghost/shadow/phantom
+// strike-trait case (adding e.g. a magical/ethereal trait to all strikes).
+func TestAddItem_WildcardTraits_LandsOnStrikesWithoutTraitsArray(t *testing.T) {
+	withTraits := meleeWrapper("club", "1d6", "bludgeoning", 12, "agile") // has attack.traits
+	noTraits := map[string]any{
+		"name": "Jaws", "offensive_action_type": "attack",
+		"subtype": "offensive_action", "type": "stat_block_section",
+		"attack": map[string]any{
+			"attack_type": "melee", "name": "Jaws", "weapon": "jaws",
+			"subtype": "attack", "type": "stat_block_section",
+			"bonus": map[string]any{"bonuses": []any{10.0, 5.0, 0.0}},
+			// deliberately NO "traits" key
+			"damage": []any{map[string]any{"damage_type": "piercing", "formula": "1d6",
+				"subtype": "attack_damage", "type": "stat_block_section"}},
+		},
+	}
+	creature := map[string]any{"stat_block": strikeStatBlock(withTraits, noTraits)}
+
+	tmpl := TemplateJSON{MonsterTemplate: MonsterTemplate{
+		Changes: []Change{{
+			ChangeCategory: "traits",
+			Effects: []Effect{{
+				Operation: "add_item",
+				Target:    "$.offense.offensive_actions[*].attack.traits",
+				Item:      map[string]any{"name": "magical", "type": "stat_block_section"},
+			}},
+		}},
+	}}
+
+	resp, err := Apply(creature, tmpl)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	oa := resp.Creature["stat_block"].(map[string]any)["offense"].(map[string]any)["offensive_actions"].([]any)
+
+	club := oa[0].(map[string]any)["attack"].(map[string]any)["traits"]
+	if got := namesOf(club); !reflect.DeepEqual(got, []string{"agile", "magical"}) {
+		t.Errorf("club strike traits = %v, want [agile magical]", got)
+	}
+	// The strike that had no traits array must have one created with the added trait.
+	jawsAttack := oa[1].(map[string]any)["attack"].(map[string]any)
+	traits, ok := jawsAttack["traits"]
+	if !ok {
+		t.Fatalf("jaws strike never got a traits array — add_item skipped it (the o9hy bug)")
+	}
+	if got := namesOf(traits); !reflect.DeepEqual(got, []string{"magical"}) {
+		t.Errorf("jaws strike traits = %v, want [magical]", got)
+	}
+}

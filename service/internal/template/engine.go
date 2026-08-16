@@ -411,10 +411,15 @@ func applyWildcardEffects(statBlock map[string]any, effects []Effect) error {
 		return fmt.Errorf("resolve wildcard %q: %w", target, err)
 	}
 
-	// For add_item on missing fields within wildcard parents, create them.
-	// Use conditional-aware creation when effects have non-trivial conditionals
-	// to avoid creating empty arrays that break null-check conditionals.
-	if len(resolved) == 0 && len(effects) > 0 && effects[0].Operation == "add_item" {
+	// For add_item on a wildcard, the target array may be present on some
+	// elements and absent on others (e.g. some strikes carry attack.traits and
+	// others don't). resolvePath returns only the elements that already have it,
+	// so an add_item to [*].attack.traits would land only on strikes that already
+	// had a traits array. Create-and-resolve across ALL wildcard elements instead
+	// (createAtLeaf returns existing leaves and creates missing ones), so the add
+	// reaches every matching element. (o9hy) Conditional-aware creation skips
+	// elements no effect targets, avoiding empty arrays that break null-checks.
+	if len(effects) > 0 && effects[0].Operation == "add_item" {
 		hasConditional := false
 		for _, eff := range effects {
 			if eff.Conditional != "" && eff.Conditional != "default" {
