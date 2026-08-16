@@ -229,7 +229,7 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 			args = append(args, p.ApplicableTo)
 		}
 	}
-	// traits (AND, case-insensitive) + item_category/item_subcategory
+	// traits (AND, case-insensitive) + item_category/item_subcategory/complexity
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
 	if p.Level != "" {
 		if strings.Contains(p.Level, "-") {
