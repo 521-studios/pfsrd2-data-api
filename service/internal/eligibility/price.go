@@ -6,10 +6,9 @@ import (
 )
 
 // priceToCp parses a PF2 price display string ("65 gp", "1,065 gp", "5 sp", "3 cp")
-// into copper pieces. Returns nil when the string is empty or not a plain amount (e.g.
-// "Varies"), so callers can leave the structured price absent rather than guess. gp=100
-// cp, sp=10 cp, cp=1. This lets the encounter builder sum a composed item's price
-// (base + runes) numerically while the display string stays for rendering.
+// into copper pieces (gp=100, sp=10, cp=1). Returns nil when the string is empty or not
+// a plain amount (e.g. "Varies"), so callers can leave the structured price absent
+// rather than guess.
 func priceToCp(s string) *int {
 	s = strings.TrimSpace(s)
 	if s == "" {
