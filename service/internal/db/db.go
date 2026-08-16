@@ -111,6 +111,7 @@ type SearchParams struct {
 	Traits      string // comma-separated (AND)
 	Category    string // item_category exact
 	Subcategory string // item_subcategory exact
+	Complexity  string // hazard complexity exact (Simple|Complex)
 	Limit       int    // default 20
 	Offset      int
 	// ApplicableTo filters for a creature's edition: entries of that
@@ -137,10 +138,10 @@ type SearchResult struct {
 }
 
 // addAttrFilters appends the JSON attrs filters shared by Search and the suggest
-// endpoints — traits (comma-separated, AND, case-insensitive), item_category, and
-// item_subcategory. Entries are aliased `e`, so callers must use that alias. Empty
-// inputs contribute nothing.
-func addAttrFilters(conds []string, args []any, traits, category, subcategory string) ([]string, []any) {
+// endpoints — traits (comma-separated, AND, case-insensitive), item_category,
+// item_subcategory, and hazard complexity. Entries are aliased `e`, so callers must
+// use that alias. Empty inputs contribute nothing.
+func addAttrFilters(conds []string, args []any, traits, category, subcategory, complexity string) ([]string, []any) {
 	for _, trait := range strings.Split(traits, ",") {
 		t := strings.TrimSpace(trait)
 		if t == "" {
@@ -157,6 +158,10 @@ func addAttrFilters(conds []string, args []any, traits, category, subcategory st
 	if subcategory != "" {
 		conds = append(conds, "json_extract(e.attrs,'$.item_subcategory') = ?")
 		args = append(args, subcategory)
+	}
+	if complexity != "" {
+		conds = append(conds, "json_extract(e.attrs,'$.complexity') = ?")
+		args = append(args, complexity)
 	}
 	return conds, args
 }
@@ -224,8 +229,8 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 			args = append(args, p.ApplicableTo)
 		}
 	}
-	// traits (AND, case-insensitive) + item_category/item_subcategory
-	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	// traits (AND, case-insensitive) + item_category/item_subcategory/complexity
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
 	if p.Level != "" {
 		if strings.Contains(p.Level, "-") {
 			parts := strings.SplitN(p.Level, "-", 2)
@@ -588,7 +593,7 @@ func SuggestTraits(ctx context.Context, db *sql.DB, p TraitSuggestParams) ([]str
 		args = append(args, s)
 	}
 	// narrow co-occurrence to the active item facet (empty inputs contribute none)
-	conds, args = addAttrFilters(conds, args, "", p.Category, p.Subcategory)
+	conds, args = addAttrFilters(conds, args, "", p.Category, p.Subcategory, "")
 	if q := strings.TrimSpace(p.Q); q != "" {
 		conds = append(conds, "LOWER(je.value) LIKE ?")
 		args = append(args, strings.ToLower(q)+"%")
@@ -643,6 +648,7 @@ type SuggestParams struct {
 	Traits      string   // comma-separated (AND)
 	Category    string   // item_category exact
 	Subcategory string   // item_subcategory exact
+	Complexity  string   // hazard complexity exact (Simple|Complex)
 	LevelMin    string   // inclusive lower level bound
 	LevelMax    string   // inclusive upper level bound
 	Limit       int      // hard cap at 15
@@ -674,7 +680,7 @@ func suggestShortQuery(ctx context.Context, db *sql.DB, p SuggestParams, query s
 		args = append(args, p.Version)
 	}
 
-	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
 	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
 
 	where := strings.Join(conds, " AND ")
@@ -768,7 +774,7 @@ func Suggest(ctx context.Context, db *sql.DB, p SuggestParams) ([]Suggestion, er
 
 	conds, args := buildWordMatchConds(words, hasTrailingSpace)
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
-	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
 	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
 	where := strings.Join(conds, " AND ")
 
@@ -825,6 +831,7 @@ type UnifiedSuggestParams struct {
 	Traits      string // comma-separated (AND)
 	Category    string // item_category exact
 	Subcategory string // item_subcategory exact
+	Complexity  string // hazard complexity exact (Simple|Complex)
 	LevelMin    string // inclusive lower level bound
 	LevelMax    string // inclusive upper level bound
 	Limit       int
@@ -852,7 +859,7 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	}
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	beforeFilters := len(conds)
-	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory)
+	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
 	conds, args = addLevelRangeFilter(conds, args, p.LevelMin, p.LevelMax)
 	hasFilter := len(conds) > beforeFilters
 
