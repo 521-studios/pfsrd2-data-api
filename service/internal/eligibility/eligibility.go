@@ -94,10 +94,13 @@ type RuneInfo struct {
 	Grades      []Grade  `json:"rune_grades"`
 }
 
-// Grade is one graded variant of a rune.
+// Grade is one graded variant of a rune. Price is the display string ("65 gp"); PriceCp
+// is that amount parsed to copper so a consumer can sum a composed item's price without
+// re-parsing (absent when Price isn't a plain amount).
 type Grade struct {
 	Level               *int   `json:"level,omitempty"`
 	Price               string `json:"price,omitempty"`
+	PriceCp             *int   `json:"price_cp,omitempty"`
 	GrantsPropertySlots *int   `json:"grants_property_slots,omitempty"`
 }
 
