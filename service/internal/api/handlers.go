@@ -93,6 +93,7 @@ func NewRouter(cfg Config) *chi.Mux {
 		r.Get("/search/traits", h.suggestTraits)
 		r.Get("/types", h.types)
 		r.Get("/sources", h.sources)
+		r.Get("/skills", h.skills)
 		r.Get("/entries/{gameID}", h.getEntry)
 		r.Get("/entries/{gameID}/full", h.getEntryFull)
 		r.Get("/entries/{gameID}/eligible", h.getEntryEligible)
@@ -265,6 +266,17 @@ func (h *handler) types(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, types)
+}
+
+// GET /skills — the standard character skills (name + key ability) for the encounter
+// builder's skill-check picker. Excludes Kingmaker kingdom skills.
+func (h *handler) skills(w http.ResponseWriter, r *http.Request) {
+	skills, err := db.Skills(r.Context(), db.Global())
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, skills)
 }
 
 // ---------------------------------------------------------------------------

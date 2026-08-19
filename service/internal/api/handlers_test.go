@@ -136,6 +136,18 @@ func setupTestDB(t *testing.T) {
 		t.Fatalf("insert remastered kobold: %v", err)
 	}
 
+	// Skills: two editions of Acrobatics (character_skill, dex) → deduped by name to one;
+	// Athletics (str); a Kingmaker kingdom skill and a null-skill_type sub-variant → excluded.
+	_, err = d.Exec(`INSERT INTO entries(game_id, type, name, current_schema_version, base_path, s3_key, source, edition, attrs, search_text) VALUES
+		('Skills:acro-pc', 'skills', 'Acrobatics', '1.0', 'skills/player_core/acrobatics.json', 'json/skills/1.0/player_core/acrobatics.json', 'Player Core', 'remastered', '{"skill_type":"character_skill","ability":"dex"}', 'Acrobatics'),
+		('Skills:acro-cr', 'skills', 'Acrobatics', '1.0', 'skills/core_rulebook/acrobatics.json', 'json/skills/1.0/core_rulebook/acrobatics.json', 'Core Rulebook', 'legacy', '{"skill_type":"character_skill","ability":"dex"}', 'Acrobatics'),
+		('Skills:ath', 'skills', 'Athletics', '1.0', 'skills/player_core/athletics.json', 'json/skills/1.0/player_core/athletics.json', 'Player Core', 'remastered', '{"skill_type":"character_skill","ability":"str"}', 'Athletics'),
+		('Skills:agri', 'skills', 'Agriculture', '1.0', 'skills/kingmaker/agriculture.json', 'json/skills/1.0/kingmaker/agriculture.json', 'Kingmaker Adventure Path', 'legacy', '{"skill_type":"kingdom_skill"}', 'Agriculture'),
+		('Skills:agri-stab', 'skills', 'Agriculture (Stability)', '1.0', 'skills/kingmaker/agriculture_stability.json', 'json/skills/1.0/kingmaker/agriculture_stability.json', 'Kingmaker Adventure Path', 'legacy', '{}', 'Agriculture Stability')`)
+	if err != nil {
+		t.Fatalf("insert skills: %v", err)
+	}
+
 	// Sources
 	_, err = d.Exec(`INSERT INTO sources(name, aonid) VALUES('Bestiary', 2), ('Monster Core', NULL)`)
 	if err != nil {
@@ -184,6 +196,33 @@ func newTestRouterWithS3(s3Client s3.ObjectFetcher) http.Handler {
 		cfg.S3Client = s3Client
 	}
 	return NewRouter(cfg)
+}
+
+func TestSkillsHandler(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/skills", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var skills []db.Skill
+	if err := json.Unmarshal(w.Body.Bytes(), &skills); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// character skills only, deduped by name, sorted: Acrobatics (dex), Athletics (str).
+	// The kingdom_skill + null-skill_type Kingmaker entries are excluded.
+	if len(skills) != 2 {
+		t.Fatalf("want 2 character skills, got %d: %+v", len(skills), skills)
+	}
+	if skills[0].Name != "Acrobatics" || skills[0].Ability != "dex" {
+		t.Fatalf("skill[0] = %+v, want Acrobatics/dex", skills[0])
+	}
+	if skills[1].Name != "Athletics" || skills[1].Ability != "str" {
+		t.Fatalf("skill[1] = %+v, want Athletics/str", skills[1])
+	}
 }
 
 func TestSuggestHandler_ShortQuery(t *testing.T) {
