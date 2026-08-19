@@ -142,6 +142,7 @@ func setupTestDB(t *testing.T) {
 		('Skills:acro-pc', 'skills', 'Acrobatics', '1.0', 'skills/player_core/acrobatics.json', 'json/skills/1.0/player_core/acrobatics.json', 'Player Core', 'remastered', '{"skill_type":"character_skill","ability":"dex"}', 'Acrobatics'),
 		('Skills:acro-cr', 'skills', 'Acrobatics', '1.0', 'skills/core_rulebook/acrobatics.json', 'json/skills/1.0/core_rulebook/acrobatics.json', 'Core Rulebook', 'legacy', '{"skill_type":"character_skill","ability":"dex"}', 'Acrobatics'),
 		('Skills:ath', 'skills', 'Athletics', '1.0', 'skills/player_core/athletics.json', 'json/skills/1.0/player_core/athletics.json', 'Player Core', 'remastered', '{"skill_type":"character_skill","ability":"str"}', 'Athletics'),
+		('Skills:alert', 'skills', 'Alertness', '1.0', 'skills/player_core/alertness.json', 'json/skills/1.0/player_core/alertness.json', 'Player Core', 'remastered', '{"skill_type":"character_skill"}', 'Alertness'),
 		('Skills:agri', 'skills', 'Agriculture', '1.0', 'skills/kingmaker/agriculture.json', 'json/skills/1.0/kingmaker/agriculture.json', 'Kingmaker Adventure Path', 'legacy', '{"skill_type":"kingdom_skill"}', 'Agriculture'),
 		('Skills:agri-stab', 'skills', 'Agriculture (Stability)', '1.0', 'skills/kingmaker/agriculture_stability.json', 'json/skills/1.0/kingmaker/agriculture_stability.json', 'Kingmaker Adventure Path', 'legacy', '{}', 'Agriculture Stability')`)
 	if err != nil {
@@ -212,16 +213,20 @@ func TestSkillsHandler(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &skills); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// character skills only, deduped by name, sorted: Acrobatics (dex), Athletics (str).
-	// The kingdom_skill + null-skill_type Kingmaker entries are excluded.
-	if len(skills) != 2 {
-		t.Fatalf("want 2 character skills, got %d: %+v", len(skills), skills)
+	// character skills only, deduped by name, sorted: Acrobatics (dex), Alertness (no
+	// ability → ""), Athletics (str). The kingdom_skill + null-skill_type Kingmaker
+	// entries are excluded.
+	if len(skills) != 3 {
+		t.Fatalf("want 3 character skills, got %d: %+v", len(skills), skills)
 	}
 	if skills[0].Name != "Acrobatics" || skills[0].Ability != "dex" {
 		t.Fatalf("skill[0] = %+v, want Acrobatics/dex", skills[0])
 	}
-	if skills[1].Name != "Athletics" || skills[1].Ability != "str" {
-		t.Fatalf("skill[1] = %+v, want Athletics/str", skills[1])
+	if skills[1].Name != "Alertness" || skills[1].Ability != "" {
+		t.Fatalf("skill[1] = %+v, want Alertness with empty ability", skills[1])
+	}
+	if skills[2].Name != "Athletics" || skills[2].Ability != "str" {
+		t.Fatalf("skill[2] = %+v, want Athletics/str", skills[2])
 	}
 }
 
