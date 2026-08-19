@@ -479,6 +479,41 @@ func Types(ctx context.Context, db *sql.DB) ([]TypeCount, error) {
 	return types, rows.Err()
 }
 
+// Skill is one standard character skill for the encounter-builder picker.
+type Skill struct {
+	Name    string `json:"name"`
+	Ability string `json:"ability,omitempty"` // key attribute (dex/wis/…); "" if absent
+}
+
+// Skills returns the distinct standard CHARACTER skills — skill.skill_type ==
+// 'character_skill' — excluding Kingmaker kingdom skills (kingdom_skill / null). Each
+// name appears once (GROUP BY name collapses the core_rulebook + player_core duplicates),
+// with its key ability, sorted by name.
+func Skills(ctx context.Context, db *sql.DB) ([]Skill, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT name, json_extract(attrs, '$.ability') AS ability
+		FROM entries
+		WHERE type = 'skills' AND json_extract(attrs, '$.skill_type') = 'character_skill'
+		GROUP BY name
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query skills: %w", err)
+	}
+	defer rows.Close()
+	var out []Skill
+	for rows.Next() {
+		var s Skill
+		var ability sql.NullString
+		if err := rows.Scan(&s.Name, &ability); err != nil {
+			return nil, fmt.Errorf("scan skill: %w", err)
+		}
+		s.Ability = ability.String
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // Sources returns all source books from the sources table.
 func Sources(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 	rows, err := db.QueryContext(ctx, `SELECT name, aonid FROM sources ORDER BY name`)
