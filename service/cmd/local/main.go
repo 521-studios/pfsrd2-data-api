@@ -10,9 +10,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 
@@ -22,7 +25,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	bucket := envOrDefault("BUCKET_NAME", "521studios-staging-pfsrd2-data")
 	imageDomain := envOrDefault("IMAGE_DOMAIN", "images.pfsrd2.521studios.com")
@@ -52,11 +56,16 @@ func main() {
 	router := api.NewRouter(api.Config{
 		S3Client:    s3Client,
 		ImageDomain: imageDomain,
-		StartupCfg:  startupCfg,
 	})
 
+	srv := &http.Server{Addr: ":" + port, Handler: router}
+	go func() {
+		<-ctx.Done()
+		srv.Shutdown(context.Background())
+	}()
+
 	log.Printf("[local] listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

@@ -13,7 +13,8 @@ import (
 const defaultWatchInterval = time.Hour
 
 // StartDBWatcher starts a background goroutine that periodically checks S3
-// for a new DB version and downloads it if the ETag changed.
+// for a new DB version and downloads it if the ETag changed. The goroutine
+// owns the DB status and serves ForceRefresh; it stops when ctx is done.
 //
 // The check interval defaults to 1h but can be overridden via the
 // WATCHER_INTERVAL environment variable (Go duration string, e.g. "30m").
@@ -21,6 +22,7 @@ func StartDBWatcher(ctx context.Context, cfg Config) {
 	interval := watchInterval()
 	log.Printf("[watcher] starting DB watcher (interval=%s)", interval)
 	ticker := time.NewTicker(interval)
+	status := Status()
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -29,13 +31,16 @@ func StartDBWatcher(ctx context.Context, cfg Config) {
 				log.Printf("[watcher] shutting down")
 				return
 			case <-ticker.C:
-				checkAndRefresh(ctx, cfg)
+				checkAndRefresh(ctx, cfg, &status)
+			case reply := <-forceRequests:
+				reply <- forceRefresh(ctx, cfg, &status)
 			}
+			publish(status)
 		}
 	}()
 }
 
-func checkAndRefresh(ctx context.Context, cfg Config) {
+func checkAndRefresh(ctx context.Context, cfg Config, status *DBStatus) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	status.LastChecked = now
 
