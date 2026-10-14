@@ -14,7 +14,8 @@ import (
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 )
 
-const (
+// Variables so tests can point them at a temp dir.
+var (
 	dbPath   = "/tmp/pfsrd2.db"
 	etagPath = "/tmp/.db_etag"
 )
@@ -114,8 +115,14 @@ func downloadDB(ctx context.Context, s3c objectStore) error {
 		os.Remove(tmp)
 		return fmt.Errorf("write tmp: %w", err)
 	}
-	f.Close()
-	return os.Rename(tmp, dbPath)
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmp, dbPath); err != nil {
+		return fmt.Errorf("rename tmp: %w", err)
+	}
+	return nil
 }
 
 func openAndSet() error {
@@ -157,7 +164,7 @@ var forceRequests = make(chan chan error)
 // waits for the result. It returns ctx.Err() if ctx ends first; a refresh
 // already handed over still runs to completion.
 func ForceRefresh(ctx context.Context) error {
-	reply := make(chan error, 1)
+	reply := make(chan error, 1) // buffered: the watcher never blocks on a caller that gave up
 	select {
 	case forceRequests <- reply:
 	case <-ctx.Done():

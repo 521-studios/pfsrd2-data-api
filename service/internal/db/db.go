@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -32,7 +33,7 @@ var globalDB atomic.Pointer[sql.DB]
 
 // retireGrace is how long a replaced handle stays open, so a request that
 // loaded it just before the swap can still run its queries.
-const retireGrace = time.Minute
+var retireGrace = time.Minute
 
 // Open opens the SQLite DB at path read-only.
 func Open(path string) (*sql.DB, error) {
@@ -48,7 +49,11 @@ func Open(path string) (*sql.DB, error) {
 // retireGrace.
 func SetGlobal(db *sql.DB) {
 	if old := globalDB.Swap(db); old != nil {
-		time.AfterFunc(retireGrace, func() { old.Close() })
+		time.AfterFunc(retireGrace, func() {
+			if err := old.Close(); err != nil {
+				log.Printf("[db] close retired handle: %v", err)
+			}
+		})
 	}
 }
 

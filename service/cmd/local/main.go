@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 
@@ -59,15 +60,22 @@ func main() {
 	})
 
 	srv := &http.Server{Addr: ":" + port, Handler: router}
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
-		srv.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[local] shutdown: %v", err)
+		}
 	}()
 
 	log.Printf("[local] listening on :%s", port)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	<-drained
 }
 
 func envOrDefault(key, def string) string {
