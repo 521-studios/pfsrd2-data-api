@@ -22,6 +22,10 @@
     "sql-injection-reviewer": {
       "overlaps_with": "code-reviewer",
       "reason": "code-reviewer lists injection generically; sql-injection-reviewer owns query building and code-reviewer defers to it."
+    },
+    "error-handling-reviewer": {
+      "overlaps_with": "resource-leak-reviewer",
+      "reason": "Both look at Close on write targets (e.g. downloadDB): error-handling owns a dropped Close error on a writer, resource-leak owns a missing Close on some path."
     }
   }
 }
