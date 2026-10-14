@@ -33,7 +33,6 @@ import (
 type Config struct {
 	S3Client    s3.ObjectFetcher
 	ImageDomain string // app domain for image redirects, e.g. "lets-roll.org"
-	StartupCfg  startup.Config
 }
 
 // ---------------------------------------------------------------------------
@@ -729,7 +728,7 @@ func (h *handler) dbStatus(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (h *handler) dbRefresh(w http.ResponseWriter, r *http.Request) {
-	if err := startup.ForceRefresh(r.Context(), h.cfg.StartupCfg); err != nil {
+	if err := startup.ForceRefresh(r.Context()); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

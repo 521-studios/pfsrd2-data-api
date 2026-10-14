@@ -52,7 +52,6 @@ func main() {
 	router := api.NewRouter(api.Config{
 		S3Client:    s3Client,
 		ImageDomain: imageDomain,
-		StartupCfg:  startupCfg,
 	})
 
 	adapter := chiproxy.NewV2(router)

@@ -15,9 +15,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -26,13 +28,14 @@ import (
 // Singleton
 // ---------------------------------------------------------------------------
 
-var (
-	mu       sync.RWMutex
-	globalDB *sql.DB
-)
+// globalDB is swapped whole by SetGlobal; readers load the current handle.
+var globalDB atomic.Pointer[sql.DB]
 
-// Open opens (or re-opens) the SQLite DB at path. Thread-safe — callers use
-// ReplaceDB to atomically swap to a freshly downloaded copy.
+// retireGrace is how long a replaced handle stays open, so a request that
+// loaded it just before the swap can still run its queries.
+var retireGrace = time.Minute
+
+// Open opens the SQLite DB at path read-only.
 func Open(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+"?_journal=WAL&_synchronous=NORMAL&mode=ro")
 	if err != nil {
@@ -42,23 +45,21 @@ func Open(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// SetGlobal replaces the package-level DB. Existing queries complete before the
-// old connection is closed.
+// SetGlobal replaces the package-level DB and closes the old handle after
+// retireGrace.
 func SetGlobal(db *sql.DB) {
-	mu.Lock()
-	old := globalDB
-	globalDB = db
-	mu.Unlock()
-	if old != nil {
-		old.Close()
+	if old := globalDB.Swap(db); old != nil {
+		time.AfterFunc(retireGrace, func() {
+			if err := old.Close(); err != nil {
+				log.Printf("[db] close retired handle: %v", err)
+			}
+		})
 	}
 }
 
-// Global returns the package-level DB (read lock held by caller via queries).
+// Global returns the current package-level DB.
 func Global() *sql.DB {
-	mu.RLock()
-	defer mu.RUnlock()
-	return globalDB
+	return globalDB.Load()
 }
 
 // ---------------------------------------------------------------------------

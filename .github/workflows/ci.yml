@@ -32,6 +32,10 @@ jobs:
             exit 1
           fi
 
+      - name: Vet
+        working-directory: service
+        run: go vet ./...
+
       - name: Run tests
         working-directory: service
-        run: go test ./...
+        run: go test -race ./...

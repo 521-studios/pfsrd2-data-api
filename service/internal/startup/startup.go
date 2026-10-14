@@ -8,12 +8,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/521studios/pfsrd2-data-api/internal/db"
 	"github.com/521studios/pfsrd2-data-api/internal/s3"
 )
 
-const (
+// Variables so tests can point them at a temp dir.
+var (
 	dbPath   = "/tmp/pfsrd2.db"
 	etagPath = "/tmp/.db_etag"
 )
@@ -23,7 +25,13 @@ type Config struct {
 	BucketName    string
 	ImageDomain   string
 	WatchInterval string // e.g. "1h"
-	S3Client      *s3.Client
+	S3Client      objectStore
+}
+
+// objectStore is the subset of *s3.Client startup uses; tests supply a fake.
+type objectStore interface {
+	HeadObject(ctx context.Context, key string) (string, error)
+	GetObject(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 // DBStatus is returned by Status() and by GET /db/status.
@@ -35,11 +43,20 @@ type DBStatus struct {
 	LastRefreshed string `json:"last_refreshed"`
 }
 
-var status DBStatus
+// published is the latest status snapshot. Only the current owner writes the
+// status — InitDB before the watcher starts, then the watcher goroutine — and
+// it publishes a fresh copy after each change, so readers never share memory
+// with the writer.
+var published atomic.Pointer[DBStatus]
 
-// InitDB performs a cold-start DB download if the ETag has changed.
-// Returns the opened *sql.DB (also sets db.Global).
+func publish(s DBStatus) { published.Store(&s) }
+
+// InitDB performs a cold-start DB download if the ETag has changed and sets
+// db.Global. It must return before StartDBWatcher is called.
 func InitDB(ctx context.Context, cfg Config) error {
+	var status DBStatus
+	defer func() { publish(status) }()
+
 	s3Etag, err := cfg.S3Client.HeadObject(ctx, s3.DBKey)
 	if err != nil {
 		// Credentials/network failure at startup must not take the server
@@ -81,7 +98,7 @@ func InitDB(ctx context.Context, cfg Config) error {
 }
 
 // downloadDB streams the DB from S3 to a temp file, then atomically renames.
-func downloadDB(ctx context.Context, s3c *s3.Client) error {
+func downloadDB(ctx context.Context, s3c objectStore) error {
 	body, err := s3c.GetObject(ctx, s3.DBKey)
 	if err != nil {
 		return err
@@ -98,8 +115,14 @@ func downloadDB(ctx context.Context, s3c *s3.Client) error {
 		os.Remove(tmp)
 		return fmt.Errorf("write tmp: %w", err)
 	}
-	f.Close()
-	return os.Rename(tmp, dbPath)
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmp, dbPath); err != nil {
+		return fmt.Errorf("rename tmp: %w", err)
+	}
+	return nil
 }
 
 func openAndSet() error {
@@ -127,11 +150,35 @@ func writeEtag(etag string) {
 
 // Status returns the current DB freshness status.
 func Status() DBStatus {
-	return status
+	if s := published.Load(); s != nil {
+		return *s
+	}
+	return DBStatus{}
 }
 
-// ForceRefresh re-downloads the DB unconditionally (for POST /db/refresh).
-func ForceRefresh(ctx context.Context, cfg Config) error {
+// forceRequests hands POST /db/refresh to the watcher goroutine, which runs
+// every refresh so two downloads never write the same temp file at once.
+var forceRequests = make(chan chan error)
+
+// ForceRefresh asks the watcher to re-download the DB unconditionally and
+// waits for the result. It returns ctx.Err() if ctx ends first; a refresh
+// already handed over still runs to completion.
+func ForceRefresh(ctx context.Context) error {
+	reply := make(chan error, 1) // buffered: the watcher never blocks on a caller that gave up
+	select {
+	case forceRequests <- reply:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func forceRefresh(ctx context.Context, cfg Config, status *DBStatus) error {
 	log.Printf("[startup] force refresh requested")
 	if err := downloadDB(ctx, cfg.S3Client); err != nil {
 		return err
