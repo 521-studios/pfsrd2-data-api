@@ -30,6 +30,6 @@ Review PRs for **dead code introduction**. Go's compiler catches unused *locals*
 - Build-tag-gated or platform-specific code (`_linux.go`, files with `//go:build` directives).
 - Code referenced by reflection (struct fields read by `encoding/json`, `database/sql` column scanning, ORM tag-based field access). These look unused but aren't.
 
-**Tooling:** CI does not run staticcheck or deadcode (CI is gofmt + `go test`); prove dead code yourself with `grep -rn '<ident>' service/` and quote the result.
+**Tooling:** CI runs staticcheck and deadcode against `service/lint-baseline/`, so new U1000 or unreachable funcs already fail CI. Focus on what tools miss (exported identifiers, partial refactors) and prove dead code yourself with `grep -rn '<ident>' service/` and quote the result.
 
 **Severity:** P3 for all findings; P2 only when the PR leaves a registered handler/route with no caller or a half-migrated duplicate path.

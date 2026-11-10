@@ -6,6 +6,6 @@ Go reviewers for pfsrd2-data-api (`service/` Go module serving S3 JSON plus a SQ
 
 **Deferral:** a P2 or P3 finding may be deferred with a beads ticket linked in the PR; P1 is not deferrable.
 
-**CI today** (`.github/workflows/ci.yml`): gofmt and `go test ./...` only. No `go vet`, no `-race`, no staticcheck, gocognit or deadcode; their absence is not a finding. Pre-commit is gofmt only. `deploy.yml` builds and applies terraform on push to `main` (staging) or manual dispatch.
+**CI today** (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race ./...`, and a lint job running staticcheck, deadcode and `gocognit -over 10` against the baselines in `service/lint-baseline/` (`service/scripts/lint-baseline.sh`). CI fails on any finding not in the baseline. A baselined function whose gocognit score rises still passes CI, so reviewers own that case. Pre-commit is gofmt only. `deploy.yml` builds and applies terraform on push to `main` (staging) or manual dispatch.
 
 Gemini Code Assist is retired from this org, so `config.json` disables it.
