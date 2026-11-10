@@ -44,7 +44,7 @@ All API lookups use game_id, not aonid (which is Archives of Nethys-specific).
 ## Key endpoints
 
 ```
-GET /search?q=dragon&type=monsters&level=5-10&traits=fire,dragon&category=Runes&subcategory=Property%20Runes&complexity=Complex
+GET /search?q=dragon&type=monsters&level=5-10&traits=fire,dragon&category=Runes&subcategory=Property%20Runes&complexity=Complex&price_min=100&price_max=5000&sort=-price  (price_* in copper, inclusive; unpriced excluded when a bound is set; sort=price|-price, unpriced last; bad values → 400)
 GET /search/suggest?q=dragon&type=monsters&traits=fire&category=Runes
 GET /search/suggest/unified?q=orc&type=monsters  (edition-aware, with alternates; also takes traits/category/subcategory/complexity + level_min/level_max; q may be empty when a filter is present → filter-only browse; item rows carry item_category/item_subcategory)
 GET /search/facets?type=equipment&type=armor     → {"categories": {"Runes": ["Property Runes", ...], ...}}

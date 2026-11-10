@@ -127,6 +127,27 @@ type handler struct {
 // ---------------------------------------------------------------------------
 
 func (h *handler) search(w http.ResponseWriter, r *http.Request) {
+	priceMin, err := queryCopper(r, "price_min")
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	priceMax, err := queryCopper(r, "price_max")
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var sortByPrice string
+	switch r.URL.Query().Get("sort") {
+	case "":
+	case "price":
+		sortByPrice = "asc"
+	case "-price":
+		sortByPrice = "desc"
+	default:
+		jsonError(w, `sort must be "price" or "-price"`, http.StatusBadRequest)
+		return
+	}
 	p := db.SearchParams{
 		Q:            r.URL.Query().Get("q"),
 		Type:         r.URL.Query().Get("type"),
@@ -137,6 +158,9 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		Category:     r.URL.Query().Get("category"),
 		Subcategory:  r.URL.Query().Get("subcategory"),
 		Complexity:   r.URL.Query().Get("complexity"),
+		PriceMinCp:   priceMin,
+		PriceMaxCp:   priceMax,
+		SortByPrice:  sortByPrice,
 		Limit:        queryInt(r, "limit", 20),
 		Offset:       queryInt(r, "offset", 0),
 		ApplicableTo: r.URL.Query().Get("applicable_to"),
@@ -1106,6 +1130,21 @@ func queryInt(r *http.Request, key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// queryCopper parses an optional price bound in copper. Unlike queryInt it
+// rejects bad input, because a dropped price_max would silently return
+// over-budget items.
+func queryCopper(r *http.Request, key string) (*int, error) {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return nil, fmt.Errorf("%s must be a non-negative integer number of copper pieces", key)
+	}
+	return &n, nil
 }
 
 func isNotFound(err error) bool {
