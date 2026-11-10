@@ -1,39 +1,39 @@
-api (*handler).applyTemplateByID internal/api/handlers.go
-api (*handler).applyTemplateInline internal/api/handlers.go
-api (*handler).fetchTemplateFromS3 internal/api/handlers.go
-api (*handler).getEntryFull internal/api/handlers.go
-api resolveTemplateEntry internal/api/handlers.go
-db Search internal/db/db.go
-db Suggest internal/db/db.go
-db deduplicateUnified internal/db/db.go
-eligibility BuildRunes internal/eligibility/response.go
-eligibility SpellFits internal/eligibility/eligibility.go
-itemapply ApplyMaterial internal/itemapply/material_spell.go
-itemapply ensureLeafArray internal/itemapply/itemapply.go
-itemapply selectVariantEffects internal/itemapply/itemapply.go
-main main cmd/defects/main.go
-template ApplyWithSelectionsResolver internal/template/engine.go
-template applyAddItem internal/template/engine.go
-template applyAddStrike internal/template/engine.go
-template applyChange internal/template/engine.go
-template applyEffectGroup internal/template/engine.go
-template applyRemoveItem internal/template/engine.go
-template applyReplaceHighestWith internal/template/engine.go
-template applySelections internal/template/engine.go
-template applySingleEffect internal/template/engine.go
-template applySizeIncrement internal/template/engine.go
-template applyWildcardEffects internal/template/engine.go
-template consumedFromChanges internal/template/engine.go
-template createAtLeaf internal/template/path.go
-template effectsFromOption internal/template/engine.go
-template evaluateValueFrom internal/template/value_from.go
-template lowestMeleeStrike internal/template/engine.go
-template matchesFilter internal/template/path.go
-template resolveAtIndex internal/template/conditional.go
-template resolveOrCreateConditional internal/template/path.go
-template resolveSegments internal/template/path.go
-template sectionAbilities internal/template/engine.go
-template spellSwapEffects internal/template/spell_swap.go
-template splitPath internal/template/path.go
-template updateSiblingText internal/template/engine.go
-template walkAncestors internal/template/engine.go
+11 db Suggest internal/db/db.go
+11 template applyRemoveItem internal/template/engine.go
+11 template effectsFromOption internal/template/engine.go
+11 template resolveAtIndex internal/template/conditional.go
+12 eligibility SpellFits internal/eligibility/eligibility.go
+12 itemapply selectVariantEffects internal/itemapply/itemapply.go
+12 template applyReplaceHighestWith internal/template/engine.go
+13 api (*handler).applyTemplateByID internal/api/handlers.go
+13 eligibility BuildRunes internal/eligibility/response.go
+13 template applyAddStrike internal/template/engine.go
+13 template lowestMeleeStrike internal/template/engine.go
+13 template matchesFilter internal/template/path.go
+14 api (*handler).getEntryFull internal/api/handlers.go
+14 itemapply ensureLeafArray internal/itemapply/itemapply.go
+14 template updateSiblingText internal/template/engine.go
+15 api (*handler).fetchTemplateFromS3 internal/api/handlers.go
+15 db deduplicateUnified internal/db/db.go
+15 template applyEffectGroup internal/template/engine.go
+17 template applyChange internal/template/engine.go
+17 template applySizeIncrement internal/template/engine.go
+18 api (*handler).applyTemplateInline internal/api/handlers.go
+18 main main cmd/defects/main.go
+18 template sectionAbilities internal/template/engine.go
+19 db Search internal/db/db.go
+20 template evaluateValueFrom internal/template/value_from.go
+21 itemapply ApplyMaterial internal/itemapply/material_spell.go
+22 template applySingleEffect internal/template/engine.go
+22 template createAtLeaf internal/template/path.go
+22 template resolveOrCreateConditional internal/template/path.go
+22 template splitPath internal/template/path.go
+24 api resolveTemplateEntry internal/api/handlers.go
+28 template ApplyWithSelectionsResolver internal/template/engine.go
+34 template walkAncestors internal/template/engine.go
+37 template applyWildcardEffects internal/template/engine.go
+37 template resolveSegments internal/template/path.go
+38 template spellSwapEffects internal/template/spell_swap.go
+41 template consumedFromChanges internal/template/engine.go
+62 template applyAddItem internal/template/engine.go
+88 template applySelections internal/template/engine.go

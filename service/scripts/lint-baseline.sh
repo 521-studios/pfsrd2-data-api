@@ -3,6 +3,8 @@
 # lint-baseline/<tool>.txt. CI fails on any finding that isn't in the baseline,
 # and on any baseline entry that's now fixed, so the list can only get shorter.
 # Line numbers are stripped so unrelated edits don't churn the baseline.
+# gocognit entries carry the score, so a baselined function that gets more
+# complex fails too (and one that gets simpler needs --update).
 #
 #   scripts/lint-baseline.sh           check (CI)
 #   scripts/lint-baseline.sh --update  rewrite the baselines from current output
@@ -14,6 +16,13 @@ status=0
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# A tool that can't run, or a build that fails, prints nothing, which would
+# otherwise read as "every finding fixed" (and --update would wipe the baselines).
+for tool in staticcheck deadcode gocognit; do
+	command -v "$tool" >/dev/null || { echo "$tool not on PATH" >&2; exit 2; }
+done
+go build ./... || { echo "go build failed; not linting" >&2; exit 2; }
+
 check() {
 	local name=$1 base=lint-baseline/$1.txt
 	shift
@@ -21,6 +30,11 @@ check() {
 	"$@" | sed -E 's/:[0-9]+:[0-9]+:/:/' | LC_ALL=C sort -u >"$tmp/$name"
 	if [[ $mode == --update ]]; then
 		cp "$tmp/$name" "$base"
+		return
+	fi
+	if [[ ! -f $base ]]; then
+		printf '%s: %s is missing (run scripts/lint-baseline.sh --update)\n' "$name" "$base"
+		status=1
 		return
 	fi
 	local new fixed
@@ -38,6 +52,6 @@ check() {
 
 check staticcheck staticcheck ./...
 check deadcode deadcode ./...
-check gocognit gocognit -over 10 -ignore '_test\.go$' -f '{{.PkgName}} {{.FuncName}} {{.Pos.Filename}}' .
+check gocognit gocognit -over 10 -ignore '_test\.go$' -f '{{.Complexity}} {{.PkgName}} {{.FuncName}} {{.Pos.Filename}}' .
 
 exit $status
