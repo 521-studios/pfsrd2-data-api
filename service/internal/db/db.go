@@ -113,6 +113,9 @@ type SearchParams struct {
 	Category    string // item_category exact
 	Subcategory string // item_subcategory exact
 	Complexity  string // hazard complexity exact (Simple|Complex)
+	PriceMinCp  *int   // inclusive price bounds in copper (attrs.price_cp)
+	PriceMaxCp  *int
+	SortByPrice string // "" (relevance/name), "asc" or "desc"; unpriced sort last
 	Limit       int    // default 20
 	Offset      int
 	// ApplicableTo filters for a creature's edition: entries of that
@@ -183,6 +186,35 @@ func addLevelRangeFilter(conds []string, args []any, levelMin, levelMax string) 
 	return conds, args
 }
 
+// addPriceRangeFilter appends inclusive copper bounds on attrs.price_cp (the
+// indexer's normalized price). An unpriced entry fails either comparison, so a
+// price filter excludes it. Entries are aliased `e`.
+func addPriceRangeFilter(conds []string, args []any, minCp, maxCp *int) ([]string, []any) {
+	if minCp != nil {
+		conds = append(conds, "json_extract(e.attrs,'$.price_cp') >= ?")
+		args = append(args, *minCp)
+	}
+	if maxCp != nil {
+		conds = append(conds, "json_extract(e.attrs,'$.price_cp') <= ?")
+		args = append(args, *maxCp)
+	}
+	return conds, args
+}
+
+// searchOrder: an explicit price sort wins; otherwise rank by FTS BM25 when
+// Q is set, else by name. BM25 requires joining the FTS table directly.
+func searchOrder(p SearchParams) (ftsJoin, orderBy string) {
+	switch {
+	case p.SortByPrice == "asc":
+		return "", "json_extract(e.attrs,'$.price_cp') IS NULL, json_extract(e.attrs,'$.price_cp') ASC, e.name ASC"
+	case p.SortByPrice == "desc":
+		return "", "json_extract(e.attrs,'$.price_cp') IS NULL, json_extract(e.attrs,'$.price_cp') DESC, e.name ASC"
+	case p.Q != "":
+		return "JOIN entries_fts ON entries_fts.rowid = e.id", "bm25(entries_fts) ASC"
+	}
+	return "", "e.name ASC"
+}
+
 // Search runs a hybrid FTS5 + structured-filter query over entries.
 func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, error) {
 	if p.Limit <= 0 {
@@ -232,6 +264,7 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 	}
 	// traits (AND, case-insensitive) + item_category/item_subcategory/complexity
 	conds, args = addAttrFilters(conds, args, p.Traits, p.Category, p.Subcategory, p.Complexity)
+	conds, args = addPriceRangeFilter(conds, args, p.PriceMinCp, p.PriceMaxCp)
 	if p.Level != "" {
 		if strings.Contains(p.Level, "-") {
 			parts := strings.SplitN(p.Level, "-", 2)
@@ -255,14 +288,7 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 		return nil, fmt.Errorf("count: %w", err)
 	}
 
-	// Data query — rank by FTS BM25 when Q is set, else by name.
-	// BM25 requires joining the FTS table directly.
-	ftsJoin := ""
-	orderBy := "e.name ASC"
-	if p.Q != "" {
-		ftsJoin = "JOIN entries_fts ON entries_fts.rowid = e.id"
-		orderBy = "bm25(entries_fts) ASC"
-	}
+	ftsJoin, orderBy := searchOrder(p)
 
 	dataSQL := fmt.Sprintf(`
 		SELECT e.id, e.game_id, e.aonid, e.type, e.name,

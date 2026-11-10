@@ -1504,3 +1504,58 @@ func TestEquipmentByAttr_HostAndEditionScoped(t *testing.T) {
 		t.Fatalf("unfiltered got %d, want 3", len(all))
 	}
 }
+
+// pricedTestDB is testDB with attrs.price_cp on three items. Frost stays unpriced.
+func pricedTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := testDB(t)
+	for gameID, cp := range map[string]int{"Equipment:902": 400, "Equipment:900": 6500, "Armor:903": 200} {
+		if _, err := db.Exec(`UPDATE entries SET attrs = json_set(attrs, '$.price_cp', ?) WHERE game_id = ?`, cp, gameID); err != nil {
+			t.Fatalf("set price_cp: %v", err)
+		}
+	}
+	return db
+}
+
+func searchNames(t *testing.T, res *SearchResult, err error) []string {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]string, len(res.Results))
+	for i, e := range res.Results {
+		names[i] = e.Name
+	}
+	return names
+}
+
+func TestSearch_PriceRange(t *testing.T) {
+	db := pricedTestDB(t)
+	lo, hi := 300, 6500
+	res, err := Search(context.Background(), db, SearchParams{PriceMinCp: &lo, PriceMaxCp: &hi})
+	// Inclusive at both ends; Leather Armor (200), unpriced Frost and every monster are out.
+	if got := searchNames(t, res, err); strings.Join(got, ",") != "Healing Potion,Striking" || res.Total != 2 {
+		t.Errorf("want [Healing Potion Striking] total 2, got %v total %d", got, res.Total)
+	}
+}
+
+func TestSearch_SortByPrice(t *testing.T) {
+	db := pricedTestDB(t)
+	for _, tc := range []struct{ dir, want string }{
+		{"asc", "Healing Potion,Striking,Frost"},
+		{"desc", "Striking,Healing Potion,Frost"},
+	} {
+		res, err := Search(context.Background(), db, SearchParams{Type: "equipment", SortByPrice: tc.dir})
+		if got := strings.Join(searchNames(t, res, err), ","); got != tc.want {
+			t.Errorf("sort %s: want %s (unpriced last), got %s", tc.dir, tc.want, got)
+		}
+	}
+}
+
+func TestSearch_SortByPriceOverridesRank(t *testing.T) {
+	db := pricedTestDB(t)
+	res, err := Search(context.Background(), db, SearchParams{Q: "player", Type: "equipment", SortByPrice: "desc"})
+	if got := strings.Join(searchNames(t, res, err), ","); got != "Striking,Healing Potion,Frost" {
+		t.Errorf("sort with q: want price order, not bm25, got %s", got)
+	}
+}

@@ -1884,3 +1884,36 @@ func TestSuggestUnifiedHandler_LevelParams(t *testing.T) {
 		t.Errorf("level_min=15: want [], got %v", out)
 	}
 }
+
+func TestSearchHandler_PriceParams(t *testing.T) {
+	setupTestDB(t)
+	r := newTestRouter()
+	var name string
+	if err := db.Global().QueryRow(`UPDATE entries SET attrs = json_set(attrs, '$.price_cp', 500)
+		WHERE id = (SELECT id FROM entries ORDER BY name DESC LIMIT 1) RETURNING name`).Scan(&name); err != nil {
+		t.Fatalf("price one entry: %v", err)
+	}
+	get := func(query string) (int, db.SearchResult) {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest("GET", "/api/pfsrd2/search?"+query, nil))
+		var res db.SearchResult
+		if w.Code == http.StatusOK {
+			if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+		}
+		return w.Code, res
+	}
+
+	if code, res := get("price_min=500&price_max=500"); code != http.StatusOK || res.Total != 1 || res.Results[0].Name != name {
+		t.Errorf("price range: want 200 with only %q, got %d %+v", name, code, res.Results)
+	}
+	if code, res := get("sort=-price&limit=1"); code != http.StatusOK || len(res.Results) != 1 || res.Results[0].Name != name {
+		t.Errorf("sort=-price: want %q first, got %d %+v", name, code, res.Results)
+	}
+	for _, bad := range []string{"price_min=abc", "price_max=-1", "price_min=1.5", "sort=name"} {
+		if code, _ := get(bad); code != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", bad, code)
+		}
+	}
+}

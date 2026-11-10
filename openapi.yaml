@@ -57,6 +57,24 @@ paths:
           schema:
             type: integer
             default: 0
+        - name: price_min
+          in: query
+          description: Minimum price in copper (inclusive). Entries without a price are excluded once either bound is set.
+          schema:
+            type: integer
+            minimum: 0
+        - name: price_max
+          in: query
+          description: Maximum price in copper (inclusive). Entries without a price are excluded once either bound is set.
+          schema:
+            type: integer
+            minimum: 0
+        - name: sort
+          in: query
+          description: "Sort by price ascending (price) or descending (-price); unpriced entries last, ties by name. Overrides relevance ranking when q is set."
+          schema:
+            type: string
+            enum: [price, -price]
       responses:
         "200":
           description: Search results
@@ -64,6 +82,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SearchResult"
+        "400":
+          description: Invalid price_min, price_max or sort value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /search/suggest:
     get:
