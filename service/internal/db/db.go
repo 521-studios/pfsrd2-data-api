@@ -201,6 +201,20 @@ func addPriceRangeFilter(conds []string, args []any, minCp, maxCp *int) ([]strin
 	return conds, args
 }
 
+// searchOrder: an explicit price sort wins; otherwise rank by FTS BM25 when
+// Q is set, else by name. BM25 requires joining the FTS table directly.
+func searchOrder(p SearchParams) (ftsJoin, orderBy string) {
+	switch {
+	case p.SortByPrice == "asc":
+		return "", "json_extract(e.attrs,'$.price_cp') IS NULL, json_extract(e.attrs,'$.price_cp') ASC, e.name ASC"
+	case p.SortByPrice == "desc":
+		return "", "json_extract(e.attrs,'$.price_cp') IS NULL, json_extract(e.attrs,'$.price_cp') DESC, e.name ASC"
+	case p.Q != "":
+		return "JOIN entries_fts ON entries_fts.rowid = e.id", "bm25(entries_fts) ASC"
+	}
+	return "", "e.name ASC"
+}
+
 // Search runs a hybrid FTS5 + structured-filter query over entries.
 func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, error) {
 	if p.Limit <= 0 {
@@ -274,18 +288,7 @@ func Search(ctx context.Context, db *sql.DB, p SearchParams) (*SearchResult, err
 		return nil, fmt.Errorf("count: %w", err)
 	}
 
-	// Data query — an explicit price sort wins; otherwise rank by FTS BM25 when
-	// Q is set, else by name. BM25 requires joining the FTS table directly.
-	ftsJoin := ""
-	orderBy := "e.name ASC"
-	switch {
-	case p.SortByPrice == "asc" || p.SortByPrice == "desc":
-		orderBy = "json_extract(e.attrs,'$.price_cp') IS NULL, json_extract(e.attrs,'$.price_cp') " +
-			strings.ToUpper(p.SortByPrice) + ", e.name ASC"
-	case p.Q != "":
-		ftsJoin = "JOIN entries_fts ON entries_fts.rowid = e.id"
-		orderBy = "bm25(entries_fts) ASC"
-	}
+	ftsJoin, orderBy := searchOrder(p)
 
 	dataSQL := fmt.Sprintf(`
 		SELECT e.id, e.game_id, e.aonid, e.type, e.name,
