@@ -84,6 +84,13 @@ paths:
                 $ref: "#/components/schemas/SearchResult"
         "400":
           description: Invalid price_min, price_max or sort value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /search/suggest:
     get:

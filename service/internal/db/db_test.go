@@ -1551,3 +1551,11 @@ func TestSearch_SortByPrice(t *testing.T) {
 		}
 	}
 }
+
+func TestSearch_SortByPriceOverridesRank(t *testing.T) {
+	db := pricedTestDB(t)
+	res, err := Search(context.Background(), db, SearchParams{Q: "player", Type: "equipment", SortByPrice: "desc"})
+	if got := strings.Join(searchNames(t, res, err), ","); got != "Striking,Healing Potion,Frost" {
+		t.Errorf("sort with q: want price order, not bm25, got %s", got)
+	}
+}
