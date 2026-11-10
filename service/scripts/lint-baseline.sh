@@ -16,12 +16,13 @@ status=0
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# A tool that can't run, or a build that fails, prints nothing, which would
+# A tool that can't run, or code that doesn't compile (tests included, hence
+# vet rather than build), prints nothing or a compiler error, which would
 # otherwise read as "every finding fixed" (and --update would wipe the baselines).
 for tool in staticcheck deadcode gocognit; do
 	command -v "$tool" >/dev/null || { echo "$tool not on PATH" >&2; exit 2; }
 done
-go build ./... || { echo "go build failed; not linting" >&2; exit 2; }
+go vet ./... || { echo "go vet failed; not linting" >&2; exit 2; }
 
 check() {
 	local name=$1 base=lint-baseline/$1.txt
