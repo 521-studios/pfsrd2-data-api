@@ -33,7 +33,7 @@ jobs:
       TF_STATE_BUCKET: 521studios-infra-tfstate-242288027927
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
@@ -95,7 +95,7 @@ jobs:
       TF_STATE_BUCKET: 521studios-infra-tfstate-242258465702
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Require main branch for production
         if: github.ref != 'refs/heads/main'
