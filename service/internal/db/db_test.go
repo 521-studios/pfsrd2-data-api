@@ -1567,7 +1567,8 @@ func TestSuggestUnified_MatchesVariantNames(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`CREATE TABLE entry_variants (game_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (game_id, name));
-		INSERT INTO entry_variants VALUES ('Equipment:902','Healing Potion (Minor)'), ('Equipment:902','Healing Potion (Lesser)')`); err != nil {
+		INSERT INTO entry_variants VALUES ('Equipment:902','Healing Potion (Minor)'), ('Equipment:902','Healing Potion (Lesser)'),
+			('Equipment:902','Healing Potion (Improved Lesser)')`); err != nil {
 		t.Fatalf("seed variants: %v", err)
 	}
 
@@ -1578,8 +1579,18 @@ func TestSuggestUnified_MatchesVariantNames(t *testing.T) {
 	if len(res) != 1 || res[0].GameID != "Equipment:902" {
 		t.Fatalf("want Healing Potion via its variant, got %+v", res)
 	}
+	// Two variants match; the shortest name wins (alphabetical order alone would
+	// pick "(Improved Lesser)").
 	if res[0].MatchedVariant == nil || *res[0].MatchedVariant != "Healing Potion (Lesser)" {
 		t.Errorf("matched_variant = %v, want Healing Potion (Lesser)", res[0].MatchedVariant)
+	}
+
+	// Trailing-space and filter-only (empty q) paths with the table present.
+	if res, err := SuggestUnified(ctx, db, UnifiedSuggestParams{Q: "lesser "}); err != nil || len(res) != 1 {
+		t.Errorf("trailing-space variant query: %v %+v", err, res)
+	}
+	if _, err := SuggestUnified(ctx, db, UnifiedSuggestParams{Q: "", Category: "Runes"}); err != nil {
+		t.Errorf("filter-only browse with entry_variants present: %v", err)
 	}
 
 	res, err = SuggestUnified(ctx, db, UnifiedSuggestParams{Q: "healing potion", Types: []string{"equipment"}})

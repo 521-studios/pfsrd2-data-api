@@ -158,7 +158,10 @@ paths:
         - name: q
           in: query
           required: true
-          description: Search string (any length)
+          description: |
+            Search string (any length). Also matches item variant names
+            ("lesser healing" finds Healing Potion via "Healing Potion (Lesser)");
+            such rows carry `matched_variant`.
           schema:
             type: string
         - name: type
@@ -697,6 +700,12 @@ components:
         alternate:
           description: Cross-edition counterpart (omitted when none exists)
           $ref: "#/components/schemas/UnifiedSuggestion"
+        matched_variant:
+          description: |
+            The item variant the query matched (shortest name first), when the
+            entry's own name did not match. Omitted otherwise.
+          type: string
+          example: "Healing Potion (Lesser)"
 
     DBStatus:
       type: object
