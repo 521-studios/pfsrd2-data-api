@@ -270,6 +270,102 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /entries/{gameID}/eligible:
+    get:
+      operationId: getEntryEligible
+      summary: List the runes, materials and spell-holder rules for an item
+      description: |
+        Runes and materials are returned only
+        when the item is a weapon/armor/shield host (`item.host` set); otherwise
+        both are empty. `spells` is present only when the item is itself a spell
+        holder (scroll/wand/staff). Candidates are scoped to the item's edition.
+      parameters:
+        - name: gameID
+          in: path
+          required: true
+          description: Game ID of the base item
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Eligible modifications for the item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligibilityResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /entries/{itemGameID}/apply/{effectGameID}:
+    parameters:
+      - name: itemGameID
+        in: path
+        required: true
+        description: Game ID of the base item (eligibility is always checked against this entry)
+        schema:
+          type: string
+      - name: effectGameID
+        in: path
+        required: true
+        description: Game ID of the rune, material or spell to apply
+        schema:
+          type: string
+      - name: grade
+        in: query
+        description: |
+          Rune grade (the variant's level) to apply. Runes only; ignored for
+          materials and spells. Omitted means the rune's default variant.
+        schema:
+          type: integer
+    get:
+      operationId: applyToItem
+      summary: Apply a rune, material or spell to the base item
+      description: |
+        Fetches the base item from S3, applies the effect, and returns the
+        modified item. The apply is boundary-checked against the eligibility
+        rules; an ineligible effect is refused with 409.
+      responses:
+        "200":
+          $ref: "#/components/responses/ItemApplyResult"
+        "400":
+          $ref: "#/components/responses/ItemApplyError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ItemApplyError"
+        "422":
+          $ref: "#/components/responses/ItemApplyError"
+        "502":
+          $ref: "#/components/responses/ItemApplyError"
+    post:
+      operationId: applyToItemPost
+      summary: Apply a rune, material or spell onto an in-progress item
+      description: |
+        Same as GET, but applies onto the item document in the request body,
+        so modifications stack (e.g. potency, then striking, then a property
+        rune, then a material): send the `item` from the previous response.
+        Eligibility still comes from `itemGameID`'s index entry.
+      requestBody:
+        required: true
+        description: The in-progress item document (max 1 MiB)
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          $ref: "#/components/responses/ItemApplyResult"
+        "400":
+          $ref: "#/components/responses/ItemApplyError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ItemApplyError"
+        "422":
+          $ref: "#/components/responses/ItemApplyError"
+        "502":
+          $ref: "#/components/responses/ItemApplyError"
+
   /images/{category}/{filename}:
     get:
       operationId: imageRedirect
@@ -812,7 +908,159 @@ components:
         value:
           description: New value (present for add/replace)
 
+    EligibilityResponse:
+      type: object
+      required: [item, runes, materials]
+      properties:
+        item:
+          type: object
+          required: [game_id, name, type]
+          properties:
+            game_id: {type: string}
+            name: {type: string}
+            type: {type: string}
+            host:
+              description: Rune/material host; absent when the item is not one
+              type: string
+              enum: [weapon, armor, shield]
+        runes:
+          type: object
+          required: [fundamental, property]
+          properties:
+            fundamental:
+              type: array
+              items:
+                $ref: "#/components/schemas/RuneCandidate"
+            property:
+              type: array
+              items:
+                $ref: "#/components/schemas/RuneCandidate"
+        materials:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaterialCandidate"
+        spells:
+          description: Present only when the item is a spell holder
+          type: object
+          required: [holder]
+          properties:
+            holder:
+              type: string
+              example: scroll
+            max_rank:
+              description: Highest spell rank the holder takes
+              oneOf:
+                - type: integer
+                - type: string
+                  enum: [cantrip]
+            excluded_types:
+              type: array
+              items: {type: string}
+            has_constraint_text:
+              description: The holder has prose constraints not captured in the fields above
+              type: boolean
+
+    RuneCandidate:
+      type: object
+      required: [game_id, name, slot, grades]
+      properties:
+        game_id: {type: string}
+        name: {type: string}
+        slot: {type: string, example: potency}
+        grades:
+          type: array
+          items:
+            type: object
+            properties:
+              level: {type: integer}
+              price:
+                description: Display price string
+                type: string
+                example: "35 gp"
+              price_cp:
+                description: Price in copper; absent when unpriceable
+                type: integer
+              grants_property_slots: {type: integer}
+
+    MaterialCandidate:
+      type: object
+      required: [game_id, name, precious]
+      properties:
+        game_id: {type: string}
+        name: {type: string}
+        precious: {type: boolean}
+        grades:
+          description: Grade caps from the material page
+          type: array
+          items:
+            type: object
+            required: [grade]
+            properties:
+              grade: {type: string, example: standard}
+              max_item_level: {type: integer}
+              max_rune_level:
+                description: Absent means unbounded (high grade)
+                type: integer
+        grants_traits:
+          type: array
+          items: {type: string}
+        grade_prices:
+          description: |
+            Prices per grade from the material use page (index attr
+            `material_use_grades`). Weapons and armor cost `price_cp` +
+            `cp_per_bulk` × the item's Bulk; shields price flat per `form`.
+            A per-Bulk price the indexer couldn't parse arrives as
+            `per_bulk_text` without `cp_per_bulk`.
+          type: array
+          items:
+            type: object
+            required: [grade, name]
+            properties:
+              grade: {type: string, example: standard}
+              name: {type: string, example: "Duskwood Weapon (Standard-Grade)"}
+              level: {type: integer}
+              price_cp: {type: integer, example: 140000}
+              cp_per_bulk: {type: integer, example: 14000}
+              per_bulk_text: {type: string, example: "+140 gp per Bulk"}
+              form:
+                description: Shield form (shields only)
+                type: string
+                enum: [buckler, shield, tower_shield]
+
   responses:
+    ItemApplyResult:
+      description: The modified item, the applied effect's label, and the changes as patch groups
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item, applied, patches]
+            properties:
+              item:
+                description: The full modified item document
+                type: object
+              applied:
+                description: Label of the applied effect (variant name for runes)
+                type: string
+              patches:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PatchGroup"
+
+    ItemApplyError:
+      description: |
+        400 bad body or the effect is not a rune/material/spell; 409 the effect
+        is ineligible for the item; 422 the rune has no usable variant for the
+        requested grade; 502 an item or rune document could not be fetched
+        from S3 or parsed.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+
     TemplateApplyResult:
       description: |
         Multipart response with two JSON parts:
