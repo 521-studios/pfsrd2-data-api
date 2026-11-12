@@ -273,9 +273,9 @@ paths:
   /entries/{gameID}/eligible:
     get:
       operationId: getEntryEligible
-      summary: List the runes, materials and spell slot an item can take
+      summary: List the runes, materials and spell-holder rules for an item
       description: |
-        "What can I apply to this item?" Runes and materials are returned only
+        Runes and materials are returned only
         when the item is a weapon/armor/shield host (`item.host` set); otherwise
         both are empty. `spells` is present only when the item is itself a spell
         holder (scroll/wand/staff). Candidates are scoped to the item's edition.
@@ -314,7 +314,7 @@ paths:
         in: query
         description: |
           Rune grade (the variant's level) to apply. Runes only; ignored for
-          materials and spells. Omitted or non-numeric means the rune's default variant.
+          materials and spells. Omitted means the rune's default variant.
         schema:
           type: integer
     get:
@@ -1051,7 +1051,8 @@ components:
       description: |
         400 bad body or the effect is not a rune/material/spell; 409 the effect
         is ineligible for the item; 422 the rune has no usable variant for the
-        requested grade; 502 S3 fetch failed.
+        requested grade; 502 an item or rune document could not be fetched
+        from S3 or parsed.
       content:
         application/json:
           schema:
