@@ -1246,6 +1246,23 @@ func TestGetFullJSONHandler_NotFound(t *testing.T) {
 	}
 }
 
+// ntq8.1: blog_images JSON stays in S3 but must not be served by path.
+func TestGetFullJSONHandler_UnservedType(t *testing.T) {
+	setupTestDB(t)
+	mock := &mockS3{objects: map[string][]byte{
+		"json/blog_images/1.0/2014/kess.jpg.json": []byte(`{"type":"blog_image"}`),
+	}}
+	r := newTestRouterWithS3(mock)
+
+	req := httptest.NewRequest("GET", "/api/pfsrd2/blog_images/1.0/2014/kess.jpg.json", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for an unserved type, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestServeImageHandler(t *testing.T) {
 	setupTestDB(t)
 

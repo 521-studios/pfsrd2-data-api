@@ -341,8 +341,17 @@ func (h *handler) listType(w http.ResponseWriter, r *http.Request) {
 // GET /{type}/{schema_version}/{book}/{filename}
 // ---------------------------------------------------------------------------
 
+// unservedTypes are kept in S3 but not served (blog_images: until each image is
+// linked to its entry, epic ntq8). The indexer leaves them out of the DB; this
+// covers the one route that reads S3 by path — 22 blog keys fit its 4 segments.
+var unservedTypes = map[string]bool{"blog_images": true}
+
 func (h *handler) getFullJSON(w http.ResponseWriter, r *http.Request) {
 	typeName := chi.URLParam(r, "type")
+	if unservedTypes[typeName] {
+		jsonError(w, "not found", http.StatusNotFound)
+		return
+	}
 	schemaVersion := chi.URLParam(r, "schemaVersion")
 	book := chi.URLParam(r, "book")
 	filename := chi.URLParam(r, "filename")
