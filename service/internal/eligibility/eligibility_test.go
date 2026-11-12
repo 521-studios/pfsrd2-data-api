@@ -2,6 +2,7 @@ package eligibility
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +114,34 @@ func TestBuildMaterials(t *testing.T) {
 	}
 	if out[0].Grades[1].MaxRuneLevel != nil {
 		t.Error("high grade max_rune_level should be nil (unbounded)")
+	}
+}
+
+func TestBuildMaterialsGradePrices(t *testing.T) {
+	out := BuildMaterials([]Candidate{
+		{GameID: "w", Name: "Duskwood Weapon", Attrs: json.RawMessage(`{"material_use_host":"weapon",
+			"material_use_grades":[{"grade":"standard","name":"Duskwood Weapon (Standard-Grade)","level":11,
+				"price_cp":140000,"cp_per_bulk":14000,"per_bulk_text":"+140 gp per Bulk"}]}`)},
+		{GameID: "s", Name: "Duskwood Shield", Attrs: json.RawMessage(`{"material_use_host":"shield",
+			"material_use_grades":[{"grade":"standard","name":"Duskwood Buckler (Standard-Grade)","level":8,
+				"price_cp":40000,"form":"buckler"}]}`)},
+		{GameID: "old", Name: "Pre-index Weapon", Attrs: json.RawMessage(`{"material_use_host":"weapon"}`)},
+	})
+	w := out[0].GradePrices[0]
+	if w.Grade != "standard" || *w.Level != 11 || *w.PriceCp != 140000 || *w.CpPerBulk != 14000 || w.PerBulkText == "" {
+		t.Errorf("weapon grade price = %+v", w)
+	}
+	s := out[1].GradePrices[0]
+	if s.Form != "buckler" || s.CpPerBulk != nil {
+		t.Errorf("shield grade price = %+v", s)
+	}
+	// A DB built before the indexer emitted material_use_grades: field absent, not an error.
+	if out[2].GradePrices != nil {
+		t.Errorf("old index should yield no grade_prices, got %+v", out[2].GradePrices)
+	}
+	b, _ := json.Marshal(out[2])
+	if strings.Contains(string(b), "grade_prices") {
+		t.Errorf("grade_prices should be omitted when absent: %s", b)
 	}
 }
 

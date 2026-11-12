@@ -45,6 +45,23 @@ type MaterialCandidate struct {
 	Precious     bool            `json:"precious"`
 	Grades       []MaterialGrade `json:"grades,omitempty"`
 	GrantsTraits []string        `json:"grants_traits,omitempty"`
+	// GradePrices is the use page's price per grade (and per shield form), from the
+	// index's material_use_grades. Separate from Grades: the caps live on the
+	// material page, the prices on the use page.
+	GradePrices []MaterialGradePrice `json:"grade_prices,omitempty"`
+}
+
+// MaterialGradePrice is one priced grade of a material use page. Weapons and armor
+// add CpPerBulk × the item's Bulk to PriceCp; shields price flat per Form. A
+// per-Bulk string the indexer couldn't parse arrives as PerBulkText with no CpPerBulk.
+type MaterialGradePrice struct {
+	Grade       string `json:"grade"`
+	Name        string `json:"name"`
+	Level       *int   `json:"level,omitempty"`
+	PriceCp     *int   `json:"price_cp,omitempty"`
+	CpPerBulk   *int   `json:"cp_per_bulk,omitempty"`
+	PerBulkText string `json:"per_bulk_text,omitempty"`
+	Form        string `json:"form,omitempty"`
 }
 
 // MaterialGrade is one grade of a material; MaxRuneLevel absent = unbounded (high).
@@ -107,9 +124,10 @@ func BuildRunes(candidates []Candidate, f ItemFacts) RuneGroups {
 
 // materialInfo is the subset of a material use-page's index attrs we surface.
 type materialInfo struct {
-	Precious     bool            `json:"material_precious"`
-	Grades       []MaterialGrade `json:"material_grades"`
-	GrantsTraits []string        `json:"material_grants_traits"`
+	Precious     bool                 `json:"material_precious"`
+	Grades       []MaterialGrade      `json:"material_grades"`
+	GrantsTraits []string             `json:"material_grants_traits"`
+	GradePrices  []MaterialGradePrice `json:"material_use_grades"`
 }
 
 // BuildMaterials turns material use-page candidates into the response list. The DB
@@ -124,7 +142,7 @@ func BuildMaterials(candidates []Candidate) []MaterialCandidate {
 		}
 		out = append(out, MaterialCandidate{
 			GameID: c.GameID, Name: c.Name, Precious: m.Precious,
-			Grades: m.Grades, GrantsTraits: m.GrantsTraits,
+			Grades: m.Grades, GrantsTraits: m.GrantsTraits, GradePrices: m.GradePrices,
 		})
 	}
 	return out
