@@ -653,6 +653,42 @@ func TestDeduplicateUnified_RemasteredPrimaryUnchanged(t *testing.T) {
 	}
 }
 
+// Both editions matched, legacy row first: the promoted remastered primary must
+// be its own full row (category, matched_variant), not the bare JOIN stub.
+func TestDeduplicateUnified_LegacyFirstKeepsRemasteredFullRow(t *testing.T) {
+	legacy, remastered := "legacy", "remastered"
+	cat, lesser := "Consumables", "Healing Potion (Lesser)"
+	full := UnifiedSuggestion{GameID: "NEW", Name: "Healing Potion", Edition: &remastered, ItemCategory: &cat, MatchedVariant: &lesser}
+	rawRows := []unifiedRawRow{
+		{
+			primary:   UnifiedSuggestion{GameID: "OLD", Name: "Healing Potion", Edition: &legacy, ItemCategory: &cat, MatchedVariant: &lesser},
+			alternate: &UnifiedSuggestion{GameID: "NEW", Name: "Healing Potion", Edition: &remastered},
+		},
+		{primary: full, alternate: &UnifiedSuggestion{GameID: "OLD", Name: "Healing Potion", Edition: &legacy}},
+	}
+
+	results := deduplicateUnified(rawRows, 15)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.GameID != "NEW" || r.MatchedVariant == nil || *r.MatchedVariant != lesser || r.ItemCategory == nil {
+		t.Errorf("remastered primary lost its row fields: %+v", r)
+	}
+	if r.Alternate == nil || r.Alternate.GameID != "OLD" || r.Alternate.MatchedVariant == nil || r.Alternate.ItemCategory == nil {
+		t.Errorf("expected full legacy alternate, got %+v", r.Alternate)
+	}
+
+	// Remastered first: no swap, and the matched legacy alternate is its full row too.
+	results = deduplicateUnified([]unifiedRawRow{rawRows[1], rawRows[0]}, 15)
+	if len(results) != 1 || results[0].GameID != "NEW" || results[0].MatchedVariant == nil {
+		t.Fatalf("remastered-first: unexpected %+v", results)
+	}
+	if a := results[0].Alternate; a == nil || a.GameID != "OLD" || a.MatchedVariant == nil || a.ItemCategory == nil {
+		t.Errorf("remastered-first: expected full legacy alternate, got %+v", a)
+	}
+}
+
 func TestSuggestUnified_ShortQuery(t *testing.T) {
 	db := testDB(t)
 	// 2-char query should work via LIKE
