@@ -675,8 +675,17 @@ func TestDeduplicateUnified_LegacyFirstKeepsRemasteredFullRow(t *testing.T) {
 	if r.GameID != "NEW" || r.MatchedVariant == nil || *r.MatchedVariant != lesser || r.ItemCategory == nil {
 		t.Errorf("remastered primary lost its row fields: %+v", r)
 	}
-	if r.Alternate == nil || r.Alternate.GameID != "OLD" {
-		t.Errorf("expected legacy alternate, got %+v", r.Alternate)
+	if r.Alternate == nil || r.Alternate.GameID != "OLD" || r.Alternate.MatchedVariant == nil || r.Alternate.ItemCategory == nil {
+		t.Errorf("expected full legacy alternate, got %+v", r.Alternate)
+	}
+
+	// Remastered first: no swap, and the matched legacy alternate is its full row too.
+	results = deduplicateUnified([]unifiedRawRow{rawRows[1], rawRows[0]}, 15)
+	if len(results) != 1 || results[0].GameID != "NEW" || results[0].MatchedVariant == nil {
+		t.Fatalf("remastered-first: unexpected %+v", results)
+	}
+	if a := results[0].Alternate; a == nil || a.GameID != "OLD" || a.MatchedVariant == nil || a.ItemCategory == nil {
+		t.Errorf("remastered-first: expected full legacy alternate, got %+v", a)
 	}
 }
 
