@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -883,6 +884,9 @@ type UnifiedSuggestion struct {
 	ItemCategory    *string            `json:"item_category,omitempty"`    // items only; null for creatures
 	ItemSubcategory *string            `json:"item_subcategory,omitempty"` // as first-class as traits, per-row
 	Alternate       *UnifiedSuggestion `json:"alternate,omitempty"`
+	// MatchedVariant is set when the query matched one of the item's variants
+	// ("Healing Potion (Lesser)") rather than its own name.
+	MatchedVariant *string `json:"matched_variant,omitempty"`
 }
 
 // UnifiedSuggestParams for GET /search/suggest/unified.
@@ -916,8 +920,15 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	// populate without typing.
 	var conds []string
 	var args []any
+	matchedExpr, matchedArgs := "NULL", []any(nil)
 	if len(words) > 0 {
 		conds, args = buildUnifiedMatchConds(words, hasTrailingSpace, trimmed)
+		// Older index DBs predate entry_variants; they match base names only.
+		if hasTable(ctx, db, "entry_variants") {
+			var cond string
+			cond, matchedExpr, args = variantMatch(words, conds, args)
+			conds, matchedArgs = []string{cond}, slices.Clone(args)
+		}
 	}
 	conds, args = addTypeVersionFilters(conds, args, p.Types, p.Version)
 	beforeFilters := len(conds)
@@ -940,15 +951,16 @@ func SuggestUnified(ctx context.Context, db *sql.DB, p UnifiedSuggestParams) ([]
 	query := fmt.Sprintf(`
 		SELECT e.game_id, e.name, e.type, e.level, e.edition, e.image_s3_key,
 		       json_extract(e.attrs,'$.item_category'), json_extract(e.attrs,'$.item_subcategory'),
-		       a2.game_id, a2.name, a2.type, a2.level, a2.edition, a2.image_s3_key
+		       a2.game_id, a2.name, a2.type, a2.level, a2.edition, a2.image_s3_key,
+		       %s
 		FROM entries e
 		LEFT JOIN alternates alt ON alt.game_id = e.game_id
 		LEFT JOIN entries a2 ON a2.game_id = alt.alternate_game_id
 		WHERE %s
 		ORDER BY CASE WHEN LOWER(e.name) LIKE ? THEN 0 ELSE 1 END, e.name ASC
 		LIMIT ?
-	`, where)
-	args = append(args, strings.ToLower(trimmed)+"%", p.Limit*2)
+	`, matchedExpr, where)
+	args = append(append(matchedArgs, args...), strings.ToLower(trimmed)+"%", p.Limit*2)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -982,6 +994,26 @@ func buildUnifiedMatchConds(words []string, hasTrailingSpace bool, trimmed strin
 	return buildWordMatchConds(words, hasTrailingSpace)
 }
 
+// variantMatch widens the name match to item variant names: a row matches when
+// its own name does, or when one variant name contains every query word. It also
+// returns the SELECT expression naming that variant (NULL when the base name
+// matched) and the args shared by both, name args first.
+func variantMatch(words, nameConds []string, nameArgs []any) (cond, matchedExpr string, args []any) {
+	nameExpr := "(" + strings.Join(nameConds, " AND ") + ")"
+	vConds := make([]string, len(words))
+	args = append([]any{}, nameArgs...)
+	for i, w := range words {
+		vConds[i] = "LOWER(v.name) LIKE ?"
+		args = append(args, "%"+strings.ToLower(w)+"%")
+	}
+	vExpr := strings.Join(vConds, " AND ")
+	cond = fmt.Sprintf("(%s OR e.game_id IN (SELECT v.game_id FROM entry_variants v WHERE %s))", nameExpr, vExpr)
+	matchedExpr = fmt.Sprintf(`CASE WHEN %s THEN NULL ELSE
+		(SELECT v.name FROM entry_variants v WHERE v.game_id = e.game_id AND %s
+		 ORDER BY length(v.name), v.name LIMIT 1) END`, nameExpr, vExpr)
+	return cond, matchedExpr, args
+}
+
 // unifiedRawRow pairs a primary match with its optional alternate.
 type unifiedRawRow struct {
 	primary   UnifiedSuggestion
@@ -1000,6 +1032,7 @@ func scanUnifiedRows(rows *sql.Rows) ([]unifiedRawRow, error) {
 			&s.GameID, &s.Name, &s.Type, &s.Level, &s.Edition, &s.ImageS3Key,
 			&s.ItemCategory, &s.ItemSubcategory,
 			&altGameID, &altName, &altType, &altLevel, &altEdition, &altImage,
+			&s.MatchedVariant,
 		); err != nil {
 			return nil, fmt.Errorf("scan unified suggestion: %w", err)
 		}
