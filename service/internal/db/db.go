@@ -1060,8 +1060,6 @@ func scanUnifiedRows(rows *sql.Rows) ([]unifiedRawRow, error) {
 // When both editions matched: same name → remastered wins; different names → lexical order.
 // When only one matched, it stays primary.
 func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion {
-	// Full rows by id: a JOINed alternate carries no category or matched_variant,
-	// so when the alternate matched in its own row, use that row instead.
 	matched := map[string]UnifiedSuggestion{}
 	for _, r := range rawRows {
 		matched[r.primary.GameID] = r.primary
@@ -1083,14 +1081,7 @@ func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion 
 		}
 
 		if alt != nil {
-			if full, ok := matched[alt.GameID]; ok {
-				alt = &full
-			}
-			// Always prefer remastered as primary
-			if s.Edition != nil && *s.Edition == "legacy" && alt.Edition != nil && *alt.Edition == "remastered" {
-				s, *alt = *alt, s
-			}
-			s.Alternate = alt
+			s = pairAlternate(s, *alt, matched)
 			seen[alt.GameID] = true
 		}
 
@@ -1102,6 +1093,20 @@ func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion 
 	}
 
 	return results
+}
+
+// pairAlternate attaches alt to s, preferring remastered as primary. alt is
+// swapped for its own matched row when it has one (a JOINed alternate carries no
+// category or matched_variant).
+func pairAlternate(s, alt UnifiedSuggestion, matched map[string]UnifiedSuggestion) UnifiedSuggestion {
+	if full, ok := matched[alt.GameID]; ok {
+		alt = full
+	}
+	if s.Edition != nil && *s.Edition == "legacy" && alt.Edition != nil && *alt.Edition == "remastered" {
+		s, alt = alt, s
+	}
+	s.Alternate = &alt
+	return s
 }
 
 func deref(s *string) string {
