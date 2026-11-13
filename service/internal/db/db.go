@@ -1060,9 +1060,11 @@ func scanUnifiedRows(rows *sql.Rows) ([]unifiedRawRow, error) {
 // When both editions matched: same name → remastered wins; different names → lexical order.
 // When only one matched, it stays primary.
 func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion {
-	matched := map[string]bool{}
+	// Full rows by id: a JOINed alternate carries no category or matched_variant,
+	// so when the alternate matched in its own row, use that row instead.
+	matched := map[string]UnifiedSuggestion{}
 	for _, r := range rawRows {
-		matched[r.primary.GameID] = true
+		matched[r.primary.GameID] = r.primary
 	}
 
 	seen := map[string]bool{}
@@ -1081,6 +1083,9 @@ func deduplicateUnified(rawRows []unifiedRawRow, limit int) []UnifiedSuggestion 
 		}
 
 		if alt != nil {
+			if full, ok := matched[alt.GameID]; ok {
+				alt = &full
+			}
 			// Always prefer remastered as primary
 			if s.Edition != nil && *s.Edition == "legacy" && alt.Edition != nil && *alt.Edition == "remastered" {
 				s, *alt = *alt, s
